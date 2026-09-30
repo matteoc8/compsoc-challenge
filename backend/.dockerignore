@@ -1,0 +1,6 @@
+.venv
+__pycache__
+*.db*
+media
+tests
+.pytest_cache

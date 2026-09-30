@@ -1,0 +1,74 @@
+# CompSoc Challenge: caddy, frontend, backend, postgres.
+# Judge0 lives in docker-compose.judge0.yml; start both together:
+#   docker compose -f docker-compose.yml -f docker-compose.judge0.yml up -d --build
+name: compsoc-challenge
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://compsoc:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/compsoc
+      MEDIA_DIR: /data/media
+    volumes:
+      - media:/data/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+      - judge0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: compsoc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: compsoc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U compsoc -d compsoc"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  # Judge0 is only reachable from the backend, never exposed.
+  judge0:
+    name: compsoc-judge0
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pgdata:
+  media:

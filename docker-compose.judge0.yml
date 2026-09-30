@@ -1,0 +1,49 @@
+# Judge0 CE 1.13.1 (do not use older images: 1.13.1 fixed three sandbox escapes).
+# Needs a Linux host with cgroup v1. On Ubuntu 22.04 add systemd.unified_cgroup_hierarchy=0
+# to GRUB_CMDLINE_LINUX in /etc/default/grub, run `sudo update-grub` and reboot.
+# It will not run on Railway/Render, or reliably under Docker Desktop on Mac/Windows.
+services:
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    privileged: true
+    restart: unless-stopped
+    networks:
+      - judge0
+    depends_on:
+      - judge0-db
+      - judge0-redis
+
+  judge0-workers:
+    image: judge0/judge0:1.13.1
+    command: ["./scripts/workers"]
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    privileged: true
+    restart: unless-stopped
+    networks:
+      - judge0
+    depends_on:
+      - judge0-db
+      - judge0-redis
+
+  judge0-db:
+    image: postgres:16.2
+    env_file: judge0.conf
+    volumes:
+      - judge0_data:/var/lib/postgresql/data/
+    restart: unless-stopped
+    networks:
+      - judge0
+
+  judge0-redis:
+    image: redis:7.2.4
+    command: ["bash", "-c", "docker-entrypoint.sh --appendonly no --requirepass \"$$REDIS_PASSWORD\""]
+    env_file: judge0.conf
+    restart: unless-stopped
+    networks:
+      - judge0
+
+volumes:
+  judge0_data:

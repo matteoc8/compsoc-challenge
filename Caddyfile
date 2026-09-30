@@ -1,0 +1,21 @@
+# One URL for the whole event. Caddy gets HTTPS automatically when SITE_ADDRESS is a real
+# domain (e.g. challenge.example.org); on a school LAN leave it as :80 for plain HTTP.
+# The *_UPSTREAM variables only need changing when running outside Docker.
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	request_body {
+		max_size 21MB
+	}
+
+	@backend path /api/* /ws
+	handle @backend {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:8000}
+	}
+
+	handle {
+		reverse_proxy {$FRONTEND_UPSTREAM:frontend:3000}
+	}
+
+	header -Server
+}
