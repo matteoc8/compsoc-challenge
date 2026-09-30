@@ -127,6 +127,7 @@ class Judge0Executor(Executor):
         poll_interval_s: float = 0.3,
         timeout_s: float = 30,
         transport: httpx.AsyncBaseTransport | None = None,
+        pack_tests: bool = True,
     ):
         headers = {}
         if auth_token:
@@ -137,6 +138,7 @@ class Judge0Executor(Executor):
         self.language_id = language_id
         self.poll_interval_s = poll_interval_s
         self.timeout_s = timeout_s
+        self.pack_tests = pack_tests
         self.http = httpx.AsyncClient(base_url=base_url.rstrip("/"), headers=headers, timeout=10, transport=transport)
 
     async def aclose(self) -> None:
@@ -150,6 +152,26 @@ class Judge0Executor(Executor):
             return False
 
     async def run_batch(self, reqs: list[ExecRequest]) -> list[ExecResult]:
+        if not self.pack_tests:
+            return await self._run_unpacked(reqs)
+        from .pack import plan, unpack
+
+        # Tests of the same program go into one submission (see pack.py); anything the
+        # packed run couldn't settle is judged on its own afterwards.
+        packs, singles = plan(reqs)
+        first = await self._run_unpacked([p.request for p in packs] + [reqs[i] for i in singles])
+        results: dict[int, ExecResult | None] = {}
+        for p, r in zip(packs, first):
+            results.update(unpack(p, r))
+        for i, r in zip(singles, first[len(packs) :]):
+            results[i] = r
+        redo = [i for i in range(len(reqs)) if results[i] is None]
+        if redo:
+            for i, r in zip(redo, await self._run_unpacked([reqs[i] for i in redo])):
+                results[i] = r
+        return [results[i] for i in range(len(reqs))]
+
+    async def _run_unpacked(self, reqs: list[ExecRequest]) -> list[ExecResult]:
         out: list[ExecResult] = []
         for i in range(0, len(reqs), self.BATCH_MAX):
             out.extend(await self._run_chunk(reqs[i : i + self.BATCH_MAX]))
@@ -269,4 +291,5 @@ def make_executor(settings) -> Executor:
         auth_token=settings.judge0_auth_token,
         rapidapi_key=settings.judge0_rapidapi_key,
         rapidapi_host=settings.judge0_rapidapi_host,
+        pack_tests=settings.judge0_pack_tests,
     )

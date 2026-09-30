@@ -137,6 +137,9 @@ as soon as the 3rd team solves it) · Code Golf 4 + 1 · Best Time Complexity 4 
 - **Judge queue:** 4 workers, Submit always ahead of Run, one in flight per team, cooldowns
   (Run 3 s, Submit 5 s), caps (60 runs / 20 submits per question). Outputs compared in the
   backend after trimming trailing whitespace. Judge0 outages retry and show a banner.
+- **Packed tests:** all of a submission's tests go to Judge0 as one submission; a runner in
+  the sandbox starts a fresh Python per test with that test's limits. Judge0's per-submission
+  overhead, not the code, was the bottleneck. `JUDGE0_PACK_TESTS=false` turns it off.
 - **Best Time Complexity:** after the buzzer, each team's latest passing submission is run on
   seeded inputs (500 / 2,000 / 8,000 by default) one team at a time, using the judge's own CPU
   time, minus a generator-only baseline, 3 repeats (slow runs aren't repeated). Results are

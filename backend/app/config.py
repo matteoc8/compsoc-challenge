@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     judge0_rapidapi_host: str = ""
     judge0_python_id: int = 71  # "Python (3.8.1)" on Judge0 CE 1.13.1; check GET /languages
     judge_workers: int = 4
+    # Run all of a submission's tests in one Judge0 submission (far less Judge0 overhead).
+    judge0_pack_tests: bool = True
 
     media_dir: str = "./media"
     cors_origins: list[str] = []
