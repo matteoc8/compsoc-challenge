@@ -17,6 +17,7 @@ export function Controls({ gameId, onError }: { gameId: string; onError: (m: str
   const snap = useGame((s) => s.snapshot);
   const [busy, setBusy] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
+  const [confirmSkip, setConfirmSkip] = useState(false);
   const [confirmForce, setConfirmForce] = useState<string | null>(null);
   const [setRemaining, setSetRemaining] = useState<string | null>(null);
   if (!snap) return null;
@@ -83,6 +84,11 @@ export function Controls({ gameId, onError }: { gameId: string; onError: (m: str
         {(state === "closed" || state === "judging") && (
           <span className="animate-pulse text-sm text-ink-300">{state === "judging" ? "Benchmarking correct solutions…" : "Waiting for the last submissions to be judged…"}</span>
         )}
+        {state === "judging" && (
+          <Button variant="secondary" disabled={busy} onClick={() => setConfirmSkip(true)}>
+            Skip measuring
+          </Button>
+        )}
       </div>
       {running && (
         <div className="flex flex-wrap items-center gap-2">
@@ -125,6 +131,20 @@ export function Controls({ gameId, onError }: { gameId: string; onError: (m: str
             {snap.in_flight} submission{snap.in_flight === 1 ? " is" : "s are"} still being judged; {snap.in_flight === 1 ? "it" : "they"} will finish and count.
           </b>
         ) : null}
+      </Modal>
+      <Modal
+        open={confirmSkip}
+        title="Skip the rest of the measuring?"
+        onClose={() => setConfirmSkip(false)}
+        confirmLabel="Show results now"
+        busy={busy}
+        onConfirm={async () => {
+          setConfirmSkip(false);
+          await call("skip-measuring");
+        }}
+      >
+        Teams already measured keep their result. The rest show as &ldquo;not measured&rdquo; and get the
+        lowest share of points; you can set their points on the results screen.
       </Modal>
       <Modal
         open={!!confirmForce}

@@ -93,6 +93,8 @@ TEST_PG_ADMIN_URL=postgresql://postgres@localhost:5432/postgres .venv/Scripts/py
 - `test_editor.py`: editor round trip, generate outputs, verify, conflict detection, reorder,
   image re-encoding and rejection, zip export/import.
 - `scripts/load_test.py`: the plan's load test and pass criteria.
+- `scripts/sandbox_check.py`: submits infinite loops, memory hogs, output floods, fork bombs
+  and friends to a real deployment and checks every verdict and that the judge stays healthy.
 - `scripts/browser_e2e.py`: a whole game in real browsers (Playwright), with screenshots of
   every screen; useful before each rehearsal.
 
@@ -111,6 +113,8 @@ TEST_PG_ADMIN_URL=postgresql://postgres@localhost:5432/postgres .venv/Scripts/py
 - **If something breaks:** Pause, fix, Resume. Add time with −15 s / +15 s / +1 min / Set
   remaining. Manual points (with a reason, undoable) for disputes. A team that must change
   computer: ⋯ → Reissue, and they type the rejoin code on the new machine.
+- **Measuring speed takes too long or hangs:** **Skip measuring** shows results now. Teams
+  already measured keep their result; set the others' points with the override on the results.
 - **After the podium:** Stats & export → CSV (teams and submissions), `pg_dump` again.
 
 Timing: each multiple-choice question takes about 40 s (4 s intro, up to 20 s to answer, results,

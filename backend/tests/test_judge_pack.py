@@ -83,9 +83,10 @@ async def test_ten_tests_become_one_submission():
 async def test_per_test_verdicts_match_separate_runs():
     src = "n = int(input())\nif n == 2:\n    raise ValueError('secret input')\nif n == 3:\n    while True: pass\nprint(n)"
     res = await make(RunningJudge0()).run_batch(reqs(src, ["1\n", "2\n", "3\n", "4\n"], cpu_limit_s=1, wall_limit_s=1.5))
-    assert [r.status_id for r in res] == [ACCEPTED, 11, TLE, ACCEPTED]
+    # after the timeout the last test isn't run: the verdict is already decided
+    assert [r.status_id for r in res] == [ACCEPTED, 11, TLE, TLE]
     assert 'script.py", line 3' in res[1].stderr  # Judge0's 3.8 prints the bare name
-    assert res[0].stdout.strip() == "1" and res[3].stdout.strip() == "4"
+    assert res[0].stdout.strip() == "1" and res[3].stdout == ""
 
 
 async def test_tests_do_not_share_files():
@@ -168,3 +169,15 @@ async def test_failed_series_pack_falls_back():
     res = await make(fake).run_series(reqs_, groups, slow_ms=200)
     assert [r.stdout.strip() for r in res] == ["1", "1", "4", "4"]
     assert len(fake.created) == 1 + 4
+
+
+def test_error_summary_points_at_the_teams_own_line():
+    from app.judge.client import summarise_error
+
+    tb = (
+        "Traceback (most recent call last):\n"
+        '  File "script.py", line 2, in <module>\n'
+        '  File "/usr/local/python-3.8.1/lib/python3.8/urllib/request.py", line 1322, in do_open\n'
+        "urllib.error.URLError: <urlopen error [Errno -3] secret>\n"
+    )
+    assert summarise_error(tb) == "urllib.error.URLError on line 2"

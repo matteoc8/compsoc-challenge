@@ -184,6 +184,13 @@ async def end_now(game_id: str, t: Teacher = Depends(current_teacher)):
     return {"ok": True}
 
 
+@router.post("/{game_id}/skip-measuring")
+async def skip_measuring(game_id: str, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.skip_measuring(game_id)
+    return {"ok": True}
+
+
 @router.post("/{game_id}/results")
 async def results(game_id: str, t: Teacher = Depends(current_teacher)):
     await check_owner(game_id, t)

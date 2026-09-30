@@ -344,25 +344,51 @@ class GameEngine:
             else:
                 bench = None
 
-            async def to_results(s, game: Game):
-                if game.state not in (GameState.closed, GameState.judging) or game.current_question_id != qid:
-                    raise GameError("moved on")
-                q = await s.get(Question, qid)
-                await self._score_at_close(s, game, q, bench)
-                game.results = {**(game.results or {}), str(qid): await self._results_payload(s, game, q, bench)}
-                game.state = GameState.results
-
-            try:
-                await self._transition(gid, to_results)
-            except GameError:
-                return
-            async with session_scope() as s:
-                game = await s.get(Game, uuid.UUID(gid))
-                rt.hub.send(gid, "results", (game.results or {}).get(str(qid)))
+            await self._to_results(gid, qid, bench)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("finishing question failed for game %s", gid)
+
+    async def _to_results(self, gid: str, qid, bench: dict | None) -> bool:
+        async def to_results(s, game: Game):
+            if game.state not in (GameState.closed, GameState.judging) or game.current_question_id != qid:
+                raise GameError("moved on")
+            q = await s.get(Question, qid)
+            await self._score_at_close(s, game, q, bench)
+            game.results = {**(game.results or {}), str(qid): await self._results_payload(s, game, q, bench)}
+            game.state = GameState.results
+
+        try:
+            await self._transition(gid, to_results)
+        except GameError:
+            return False
+        async with session_scope() as s:
+            game = await s.get(Game, uuid.UUID(gid))
+            rt.hub.send(gid, "results", (game.results or {}).get(str(qid)))
+        return True
+
+    async def skip_measuring(self, game_id) -> None:
+        """Best Time Complexity: stop benchmarking and show results now. Teams already
+        measured keep their result; the rest show as not measured, and the teacher can
+        give them points with an override."""
+        gid = str(game_id)
+        async with session_scope() as s:
+            game = await s.get(Game, uuid.UUID(gid))
+            if not game or game.state != GameState.judging:
+                raise GameError("Nothing is being measured", 409)
+            qid = game.current_question_id
+        task = self.finishers.get(gid)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        from .judging import partial_bench
+
+        if not await self._to_results(gid, qid, await partial_bench(gid, qid)):
+            raise GameError("The game has already moved on", 409)
 
     # ------------------------------------------------------------------ scoring
 

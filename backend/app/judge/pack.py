@@ -8,7 +8,9 @@ applies that test's CPU, wall, memory and file-size limits itself, and prints on
 line with every test's result. Judge0 status ids are reproduced for each test.
 
 Tests the runner could not finish within the submission's overall budget, or whose
-output was too large to send back, come back as "redo" and are judged one by one.
+output was too large to send back, come back as "redo" and are judged one by one. After a
+test times out the rest aren't run (they count as not passed): the verdict is decided, and
+ten timeouts would cost the server about 30 s of CPU.
 
 RUNNER runs on Judge0's Python 3.8: no 3.9+ syntax. It degrades to wall-clock limits
 where `resource`/`os.wait4` don't exist (Windows), which only the unit tests use.
@@ -19,7 +21,7 @@ import json
 import math
 from dataclasses import dataclass
 
-from .client import ACCEPTED, ExecRequest, ExecResult
+from .client import ACCEPTED, TLE, ExecRequest, ExecResult
 
 # Judge0's MAX_CPU_TIME_LIMIT / MAX_WALL_TIME_LIMIT / MAX_MEMORY_LIMIT (judge0.conf, and
 # the defaults on hosted Judge0 CE). Asking for more is rejected with a 422.
@@ -142,6 +144,9 @@ for i, stdin in enumerate(cfg["tests"]):
             stopped = True
         elif r["t"] > slow_ms:
             skip_group = g
+    elif r["s"] == TLE:
+        # The verdict is decided; more timeouts would only cost the server CPU.
+        stopped = True
 sys.stdout.write(json.dumps(results))
 '''
 
@@ -213,7 +218,13 @@ def unpack(p: Packed, r: ExecResult) -> dict[int, ExecResult | None]:
     got = rows(p, r)
     if got is None:
         return {i: None for i in p.indices}
-    return {i: (row if isinstance(row, ExecResult) else None) for i, row in zip(p.indices, got)}
+    out: dict[int, ExecResult | None] = {}
+    for i, row in zip(p.indices, got):
+        if row == SKIPPED:  # not run after an earlier test timed out: counts as not passed
+            out[i] = ExecResult(status_id=TLE)
+        else:
+            out[i] = row if isinstance(row, ExecResult) else None
+    return out
 
 
 def plan(reqs: list[ExecRequest]) -> tuple[list[Packed], list[int]]:

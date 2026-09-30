@@ -75,7 +75,7 @@ def outputs_match(actual: str, expected: str) -> bool:
     return normalise_output(actual) == normalise_output(expected)
 
 
-_LINE_RE = re.compile(r'File "[^"]*", line (\d+)')
+_LINE_RE = re.compile(r'File "([^"]*)", line (\d+)')
 
 
 def summarise_error(stderr: str) -> str:
@@ -88,7 +88,10 @@ def summarise_error(stderr: str) -> str:
     exc = last.split(":", 1)[0].strip()
     if not re.fullmatch(r"[A-Za-z_][\w.]*", exc):
         exc = "Error"
-    line_nos = _LINE_RE.findall(stderr)
+    frames = _LINE_RE.findall(stderr)
+    # The deepest line in the team's own file, not inside Python's libraries.
+    own = [ln for f, ln in frames if f.replace("\\", "/").split("/")[-1] == "script.py"]
+    line_nos = own or [ln for _, ln in frames]
     return f"{exc} on line {line_nos[-1]}" if line_nos else exc
 
 

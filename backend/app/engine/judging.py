@@ -372,19 +372,42 @@ async def generate_outputs(q: Question) -> dict:
 # ---------------------------------------------------------------------- benchmarks
 
 
-async def benchmark_question(gid: str, qid) -> dict:
-    """Benchmark each team's latest passing submission, one at a time."""
-    async with session_scope() as s:
-        q = await s.get(Question, qid)
-        cfg = QuestionConfig(**q.config)
-        passes = await views.full_passes(s, uuid.UUID(gid), qid)
-        teams = {str(t.id) for t in (await s.scalars(select(Team).where(Team.game_id == uuid.UUID(gid), Team.kicked.is_(False)))).all()}
-        reference = q.reference_solution
+async def _latest_passes(s, gid: str, qid) -> dict[str, Submission]:
+    """Each team's latest submission that passed every test (kicked teams left out)."""
+    passes = await views.full_passes(s, uuid.UUID(gid), qid)
+    teams = {str(t.id) for t in (await s.scalars(select(Team).where(Team.game_id == uuid.UUID(gid), Team.kicked.is_(False)))).all()}
     latest: dict[str, Submission] = {}
     for p in passes:
         tid = str(p.team_id)
         if tid in teams and (tid not in latest or p.id > latest[tid].id):
             latest[tid] = p
+    return latest
+
+
+async def partial_bench(gid: str, qid) -> dict:
+    """The benchmark as far as it got (see engine.skip_measuring)."""
+    async with session_scope() as s:
+        q = await s.get(Question, qid)
+        bench_cfg = QuestionConfig(**q.config).benchmark
+        latest = await _latest_passes(s, gid, qid)
+    result = {"sizes": bench_cfg.sizes if bench_cfg else [], "floor_ms": bench_cfg.floor_ms if bench_cfg else 0, "teams": {}}
+    for tid, sub in latest.items():
+        result["teams"][tid] = sub.perf or {
+            "submission_id": sub.id,
+            "elapsed_ms": sub.elapsed_ms,
+            "score_ms": None,
+            "class_label": "not measured (skipped)",
+        }
+    return result
+
+
+async def benchmark_question(gid: str, qid) -> dict:
+    """Benchmark each team's latest passing submission, one at a time."""
+    async with session_scope() as s:
+        q = await s.get(Question, qid)
+        cfg = QuestionConfig(**q.config)
+        latest = await _latest_passes(s, gid, qid)
+        reference = q.reference_solution
     bench_cfg = cfg.benchmark
     result = {"sizes": bench_cfg.sizes if bench_cfg else [], "floor_ms": bench_cfg.floor_ms if bench_cfg else 0, "teams": {}}
     if not bench_cfg or not latest:

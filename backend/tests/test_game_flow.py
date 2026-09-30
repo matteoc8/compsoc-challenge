@@ -295,3 +295,43 @@ def test_super_fast_first_three_then_ends(client):
     assert question_points(c, gid, qid) == {teams[0]["team_id"]: 4000, teams[1]["team_id"]: 3000, teams[2]["team_id"]: 2000}
     res = db(c, lambda s: s.get(Game, uuid.UUID(gid))).results[qid]
     assert [s["name"] for s in res["solves"]][:3] == ["One", "Two", "Three"]
+
+
+def test_skip_measuring_keeps_measured_teams_and_allows_overrides(client):
+    c = client
+    login_teacher(c)
+    quiz = make_quiz(c, "best_complexity")
+    [q] = (x["id"] for x in quiz["questions"])
+    game = new_game(c, quiz["id"])
+    gid = game["id"]
+    fast, slow = join(c, game["join_code"], "Fast"), join(c, game["join_code"], "Slow")
+    assert c.post(f"/api/games/{gid}/skip-measuring").status_code == 409  # nothing to skip in the lobby
+    c.post(f"/api/games/{gid}/start", json={"expect_state": "lobby"})
+    c.post(f"/api/games/{gid}/next", json={"expect_state": "round_intro"})
+    wait_state(c, gid, "open", 8)
+    submit(c, fast["token"], q, PAIRS_FAST)
+    judged(c, gid, fast["team_id"], 1)
+    submit(c, slow["token"], q, PAIRS_SLOW)
+    judged(c, gid, slow["team_id"], 1)
+    c.post(f"/api/games/{gid}/end-now")
+    wait_state(c, gid, "judging", 15)
+
+    def fast_measured(s):
+        async def q_(s):
+            return (await s.scalar(select(Submission).where(Submission.team_id == uuid.UUID(fast["team_id"])))).perf
+
+        return q_(s)
+
+    wait_until(lambda: db(c, fast_measured), 60, what="first team measured")
+    r = c.post(f"/api/games/{gid}/skip-measuring")
+    assert r.status_code == 200, r.text
+    assert state(c, gid) == "results"
+    teams = db(c, lambda s: s.get(Game, uuid.UUID(gid))).results[q]["bench"]["teams"]
+    assert teams[fast["team_id"]]["class_label"].startswith("≈ O(n)")
+    assert teams[slow["team_id"]]["class_label"] == "not measured (skipped)"
+    pts = question_points(c, gid, q)
+    assert pts[fast["team_id"]] == 4000
+    r = c.post(f"/api/games/{gid}/results/override", json={"team_id": slow["team_id"], "points": 2500})
+    assert r.status_code == 200, r.text
+    assert question_points(c, gid, q)[slow["team_id"]] == 2500
+    assert c.post(f"/api/games/{gid}/skip-measuring").status_code == 409
