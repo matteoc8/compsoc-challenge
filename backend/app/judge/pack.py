@@ -115,18 +115,33 @@ def run(stdin):
     return {"s": status_id, "o": out, "e": err, "t": round(t * 1000), "m": mem, "redo": big_out or big_err}
 
 
+# A series (benchmarks) has a group per test: it stops at the first run that isn't
+# accepted, and skips the rest of a group after a run slower than slow_ms.
+groups, slow_ms = cfg.get("groups"), cfg.get("slow_ms")
 results = []
 t0 = time.monotonic()
 cpu_reserve = cpu_soft + 1.5
-for stdin in cfg["tests"]:
+stopped, skip_group, out_of_budget = False, None, False
+for i, stdin in enumerate(cfg["tests"]):
+    g = groups[i] if groups else None
+    if stopped or (g is not None and g == skip_group):
+        results.append({"skip": True})
+        continue
     used_cpu = time.process_time()
     if resource:
         ru = resource.getrusage(resource.RUSAGE_CHILDREN)
         used_cpu += ru.ru_utime + ru.ru_stime
-    if used_cpu + cpu_reserve > cfg["job_cpu"] or time.monotonic() - t0 + wall_limit + 1 > cfg["job_wall"]:
+    if out_of_budget or used_cpu + cpu_reserve > cfg["job_cpu"] or time.monotonic() - t0 + wall_limit + 1 > cfg["job_wall"]:
+        out_of_budget = True
         results.append({"redo": True})
         continue
-    results.append(run(stdin))
+    r = run(stdin)
+    results.append(r)
+    if groups:
+        if r["s"] != 3:
+            stopped = True
+        elif r["t"] > slow_ms:
+            skip_group = g
 sys.stdout.write(json.dumps(results))
 '''
 
@@ -137,8 +152,9 @@ class Packed:
     indices: list[int]
 
 
-def pack(reqs: list[ExecRequest], indices: list[int]) -> Packed:
-    """One submission running reqs[i] for every i in indices (same source and limits)."""
+def pack(reqs: list[ExecRequest], indices: list[int], groups: list[int] | None = None, slow_ms: float | None = None) -> Packed:
+    """One submission running reqs[i] for every i in indices (same source and limits).
+    With groups, it runs as a series (see RUNNER)."""
     first = reqs[indices[0]]
     n = len(indices)
     job_cpu = min(JOB_CPU_MAX_S, n * (math.ceil(first.cpu_limit_s + 0.5) + 1.5) + 1)
@@ -152,6 +168,8 @@ def pack(reqs: list[ExecRequest], indices: list[int]) -> Packed:
         "job_wall": job_wall - 1,
         "out_cap": OUTPUT_BUDGET_BYTES // (2 * n),
     }
+    if groups is not None:
+        cfg.update(groups=groups, slow_ms=slow_ms)
     source = RUNNER.replace("__CODE__", base64.b64encode(first.source.encode()).decode())
     return Packed(
         ExecRequest(
@@ -165,23 +183,37 @@ def pack(reqs: list[ExecRequest], indices: list[int]) -> Packed:
     )
 
 
-def unpack(p: Packed, r: ExecResult) -> dict[int, ExecResult | None]:
-    """Results by original index; None = judge that test on its own."""
+SKIPPED = "skipped"  # a series run the rules said not to do
+REDO = "redo"  # couldn't be settled in the packed run: run it on its own
+
+
+def rows(p: Packed, r: ExecResult) -> list[ExecResult | str] | None:
+    """Per-test results in pack order, or None if the packed run itself failed."""
     try:
         if r.status_id != ACCEPTED:
             raise ValueError(r.status_id)
-        rows = json.loads(r.stdout)
-        if not isinstance(rows, list) or len(rows) != len(p.indices):
+        raw = json.loads(r.stdout)
+        if not isinstance(raw, list) or len(raw) != len(p.indices):
             raise ValueError("wrong length")
     except ValueError:
-        return {i: None for i in p.indices}
-    out: dict[int, ExecResult | None] = {}
-    for i, row in zip(p.indices, rows):
-        if row.get("redo"):
-            out[i] = None
+        return None
+    out: list[ExecResult | str] = []
+    for row in raw:
+        if row.get("skip"):
+            out.append(SKIPPED)
+        elif row.get("redo"):
+            out.append(REDO)
         else:
-            out[i] = ExecResult(status_id=row["s"], stdout=row["o"], stderr=row["e"], time_ms=row["t"], memory_kb=row["m"])
+            out.append(ExecResult(status_id=row["s"], stdout=row["o"], stderr=row["e"], time_ms=row["t"], memory_kb=row["m"]))
     return out
+
+
+def unpack(p: Packed, r: ExecResult) -> dict[int, ExecResult | None]:
+    """Results by original index; None = judge that test on its own."""
+    got = rows(p, r)
+    if got is None:
+        return {i: None for i in p.indices}
+    return {i: (row if isinstance(row, ExecResult) else None) for i, row in zip(p.indices, got)}
 
 
 def plan(reqs: list[ExecRequest]) -> tuple[list[Packed], list[int]]:

@@ -101,6 +101,25 @@ class Executor:
     async def health(self) -> bool:  # pragma: no cover
         raise NotImplementedError
 
+    async def run_series(
+        self, reqs: list[ExecRequest], groups: list[int], slow_ms: float, skip_group: int | None = None
+    ) -> list[ExecResult | None]:
+        """Run in order, stopping at the first result that isn't Accepted and skipping the
+        rest of a group after a run slower than slow_ms. None = not run."""
+        out: list[ExecResult | None] = []
+        stopped = False
+        for r, g in zip(reqs, groups):
+            if stopped or g == skip_group:
+                out.append(None)
+                continue
+            [res] = await self.run_batch([r])
+            out.append(res)
+            if res.status_id != ACCEPTED:
+                stopped = True
+            elif (res.time_ms or 0) > slow_ms:
+                skip_group = g
+        return out
+
     async def aclose(self) -> None:
         pass
 
@@ -170,6 +189,33 @@ class Judge0Executor(Executor):
             for i, r in zip(redo, await self._run_unpacked([reqs[i] for i in redo])):
                 results[i] = r
         return [results[i] for i in range(len(reqs))]
+
+    async def run_series(
+        self, reqs: list[ExecRequest], groups: list[int], slow_ms: float, skip_group: int | None = None
+    ) -> list[ExecResult | None]:
+        if not self.pack_tests or len(reqs) < 2 or skip_group is not None:
+            return await super().run_series(reqs, groups, slow_ms, skip_group)
+        from .pack import REDO, pack, rows
+
+        # The whole series in one submission; if it couldn't finish, carry on one run at a
+        # time from the first run it didn't settle, with the same rules.
+        p = pack(reqs, list(range(len(reqs))), groups, slow_ms)
+        [r] = await self._run_unpacked([p.request])
+        got = rows(p, r)
+        if got is None:
+            return await super().run_series(reqs, groups, slow_ms)
+        out: list[ExecResult | None] = []
+        skip = None
+        for k, row in enumerate(got):
+            if row == REDO:
+                return out + await super().run_series(reqs[k:], groups[k:], slow_ms, skip)
+            if isinstance(row, ExecResult):
+                if row.status_id == ACCEPTED and (row.time_ms or 0) > slow_ms:
+                    skip = groups[k]
+                out.append(row)
+            else:
+                out.append(None)
+        return out
 
     async def _run_unpacked(self, reqs: list[ExecRequest]) -> list[ExecResult]:
         out: list[ExecResult] = []

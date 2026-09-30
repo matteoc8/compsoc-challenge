@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 
 import httpx
 
@@ -35,6 +36,7 @@ class RunningJudge0:
         if self.fail and "USER_CODE" in src:
             return {"status": {"id": INTERNAL_ERROR}}
         try:
+            start = time.perf_counter()
             with tempfile.TemporaryDirectory() as box:
                 p = subprocess.run(
                     [sys.executable, "-c", src], input=stdin.encode(), capture_output=True, timeout=sub["wall_time_limit"], cwd=box
@@ -45,7 +47,7 @@ class RunningJudge0:
             "status": {"id": ACCEPTED if p.returncode == 0 else 11},
             "stdout": base64.b64encode(p.stdout).decode() if p.stdout else None,
             "stderr": base64.b64encode(p.stderr).decode() if p.stderr else None,
-            "time": "0.01",
+            "time": f"{time.perf_counter() - start:.3f}",
             "memory": 3000,
         }
 
@@ -124,3 +126,45 @@ async def test_packing_can_be_switched_off():
 def test_packed_limits_stay_within_judge0_maximums():
     [p], _ = plan(reqs("print(1)", [""] * 20, cpu_limit_s=5, wall_limit_s=11, memory_kb=500_000))
     assert p.request.cpu_limit_s <= 15 and p.request.wall_limit_s <= 20 and p.request.memory_kb <= 512_000
+
+
+SERIES_SRC = (
+    "import time\n"
+    "n = int(input())\n"
+    "if n == 3:\n"
+    "    while True: pass\n"
+    "if n == 2:\n"
+    "    time.sleep(0.3)\n"
+    "print(n)"
+)
+
+
+def series(sizes, repeats=3):
+    plan = [(n, rep) for n in sizes for rep in range(repeats)]
+    return [ExecRequest(source=SERIES_SRC, stdin=f"{n}\n", cpu_limit_s=1, wall_limit_s=1.5) for n, _ in plan], [n for n, _ in plan]
+
+
+async def test_series_is_one_submission_and_follows_the_rules():
+    fake = RunningJudge0()
+    reqs_, groups = series([1, 2, 3, 4])
+    res = await make(fake).run_series(reqs_, groups, slow_ms=200)
+    assert len(fake.created) == 1
+    # size 1: three runs; size 2 is slow, so one run; size 3 times out and stops the series
+    assert [r is not None for r in res] == [True, True, True, True, False, False, True, False, False, False, False, False]
+    assert res[6].status_id == TLE
+
+
+async def test_series_rules_are_the_same_unpacked():
+    fake = RunningJudge0()
+    reqs_, groups = series([1, 2, 3, 4])
+    res = await make(fake, pack_tests=False).run_series(reqs_, groups, slow_ms=200)
+    assert [r is not None for r in res] == [True, True, True, True, False, False, True, False, False, False, False, False]
+    assert len(fake.created) == 5
+
+
+async def test_failed_series_pack_falls_back():
+    fake = RunningJudge0(fail=True)
+    reqs_, groups = series([1, 4], repeats=2)
+    res = await make(fake).run_series(reqs_, groups, slow_ms=200)
+    assert [r.stdout.strip() for r in res] == ["1", "1", "4", "4"]
+    assert len(fake.created) == 1 + 4

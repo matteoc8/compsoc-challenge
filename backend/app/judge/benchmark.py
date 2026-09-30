@@ -61,20 +61,18 @@ async def measure(
 ) -> BenchResult:
     """Run sizes in order, serially. Stops at the first timeout. Slow runs (>1 s) aren't repeated."""
     res = BenchResult()
+    source = build_source(team_code, bench.generator)
+    plan = [(n, rep) for n in bench.sizes for rep in range(bench.repeats)]
+    reqs = [
+        ExecRequest(source=source, stdin=f"{n}\n", cpu_limit_s=bench.cpu_limit_s, wall_limit_s=bench.cpu_limit_s * 2 + 1, memory_kb=256_000)
+        for n, _ in plan
+    ]
+    runs = await ex.run_series(reqs, groups=[n for n, _ in plan], slow_ms=1000)
     for n in bench.sizes:
         samples: list[float] = []
-        for rep in range(bench.repeats):
-            [r] = await ex.run_batch(
-                [
-                    ExecRequest(
-                        source=build_source(team_code, bench.generator),
-                        stdin=f"{n}\n",
-                        cpu_limit_s=bench.cpu_limit_s,
-                        wall_limit_s=bench.cpu_limit_s * 2 + 1,
-                        memory_kb=256_000,
-                    )
-                ]
-            )
+        for (size, _), r in zip(plan, runs):
+            if size != n or r is None:
+                continue
             if r.status_id == TLE:
                 res.timed_out_at = n
                 return res
@@ -83,8 +81,6 @@ async def measure(
                 return res
             res.hashes[n] = r.stdout.strip()
             samples.append(float(r.time_ms or 0))
-            if (r.time_ms or 0) > 1000:
-                break
         med = statistics.median(samples)
         base = (baseline or {}).get(n, 0.0)
         res.times_ms[n] = max(med - base, 0.0)
