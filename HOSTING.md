@@ -10,27 +10,37 @@ first time.
 
 ## 1. Which droplet
 
-For **up to 10 teams at once**, where a few seconds' wait for a result is fine:
+The plan: one droplet, two sizes (Basic, Regular SSD):
 
-| Plan (Basic, Regular SSD) | Price* | Verdict |
+| When | Plan | Price* |
 |---|---|---|
-| 1 GB / 1 vCPU | ~$6/mo | Too small: Judge0 alone needs more memory. |
-| 2 GB / 1 vCPU | ~$12/mo | Fine for the problem of the week and the rest of the site. Too tight for a live event. |
-| 2 GB / 2 vCPU | ~$18/mo | Works for 10 teams with the 2 GB swap file below, but with little memory to spare. |
-| **4 GB / 2 vCPU** | **~$24/mo** | **The cheapest I'd trust for an event.** |
+| **Day to day** (the site, problem of the week) | **2 GB / 1 vCPU** | **~$12/mo** |
+| **Event days** (up to 10 teams at once) | **2 GB / 2 vCPU** | **~$18/mo**, billed hourly |
+| Fallback, if the event test run in step 8 struggles | 4 GB / 2 vCPU | ~$24/mo |
 
 \*At the time of writing; check the Create Droplet page.
 
-Why: Judge0 (its server, workers, its own Postgres and Redis) plus this app's Postgres, backend,
-site and Caddy use roughly 1.5 GB doing nothing. Each submission runs up to 128 MB per test, 4 at
-a time. Two CPUs keep the speed tests at the end of a Fastest Code / Best Time Complexity round
-steadier, because measuring one team's code doesn't fight with everything else for a single CPU.
+**Create the droplet on the $12 plan.** The day before an event, **Resize → CPU and RAM only →
+2 GB / 2 vCPU**, and resize back to the $12 plan afterwards. Resizing needs the droplet off for a
+minute or two. Billing is hourly, so an event day costs pennies extra. "CPU and RAM only" keeps
+the original disk, which is what lets you go back down.
 
-**Cheapest way to run it all year:** create the droplet on the **2 GB / 1 vCPU** plan and use it
-like that for the problem of the week. The day before an event, **Resize → CPU and RAM only** to
-**4 GB / 2 vCPU**, and size it back down afterwards. Resizing needs the droplet off for a minute or
-two. Billing is hourly, so an event day costs pennies extra. ("CPU and RAM only" keeps the
-original disk, which is what lets you go back down.)
+Why these sizes: Judge0 (its server, workers, its own Postgres and Redis) plus this app's
+Postgres, backend, site and Caddy use roughly 1.5 GB doing nothing, so memory is the tight part.
+Both plans have 2 GB, so the setup below keeps memory use down:
+
+- Judge0 runs **2 programs at once** (`COUNT=2` in `judge0.conf`) and the site sends it **2 jobs
+  at a time** (`JUDGE_WORKERS=2` in `.env`). Both are already set in this repository.
+- A **2 GB swap file** (step 3) is the safety net. If memory runs short, things slow down instead
+  of crashing.
+
+The second CPU on event days keeps the speed tests at the end of a Fastest Code / Best Time
+Complexity round steadier, because measuring one team's code doesn't fight with the rest of the
+site for a single CPU.
+
+What teams see: each team can have one submission being judged at a time, and one takes a second
+or two. If all 10 teams press Submit at the same moment, the last waits maybe 10–15 seconds;
+normally it's a few seconds.
 
 ## 2. Create it
 
@@ -116,8 +126,8 @@ nano judge0.conf
 grep -n change-me .env judge0.conf   # should print nothing
 ```
 
-On the 2 GB plans, set `COUNT=2` in `judge0.conf` (2 programs at once instead of 4) to save
-memory. Put it back to 4 for events on the 4 GB plan.
+Leave `COUNT=2` in `judge0.conf` and `JUDGE_WORKERS=2` in `.env` as they are (see step 1). Only if you
+move to the 4 GB plan for good can you raise both to 4.
 
 ## 7. Start it
 
@@ -197,6 +207,20 @@ into an empty database.
 
 ## Event day
 
-See *Event-day runbook* in the README. In short: resize up the day before, check `/api/health`
-and **Verify all** half an hour before, take a backup, open the projector from the console, and
-resize back down afterwards.
+1. **The day before:** DigitalOcean → the droplet → **Resize → CPU and RAM only → 2 GB / 2 vCPU**
+   ($18). It powers off for a minute or two.
+2. **Test run (before the first event, then whenever you like):** from your computer run the
+   10-team load test from step 8. While it runs, watch the server in another terminal:
+
+   ```bash
+   free -m          # the "Swap: used" figure
+   docker stats     # memory per container
+   ```
+
+   If it passes and swap use stays small (a few hundred MB at most), the $18 plan is fine. If it
+   fails, or swap fills up, resize to **4 GB / 2 vCPU** ($24) for events instead. That takes the
+   same couple of minutes, even on the day.
+3. **Half an hour before:** check `/api/health` says `"judge": true`, press **Verify all** on the
+   quiz, and take a backup (step 10).
+4. **During:** see *Event-day runbook* in the README.
+5. **Afterwards:** take another backup, then **Resize → CPU and RAM only → 2 GB / 1 vCPU** ($12).

@@ -60,7 +60,8 @@ truth, Caddy in front so everything runs on one URL.
 
 Needs a **Linux host with cgroup v1** for Judge0 (Ubuntu 22.04: add
 `systemd.unified_cgroup_hierarchy=0` to `GRUB_CMDLINE_LINUX`, `sudo update-grub`, reboot).
-A 2 vCPU / 4 GB VPS or a spare school Linux machine is plenty.
+The DigitalOcean setup in HOSTING.md uses a 2 GB / 1 vCPU droplet day to day (~$12/month)
+and resizes it to 2 GB / 2 vCPU (~$18) for events, with Judge0 running 2 programs at once.
 
 ```bash
 cp .env.example .env            # set POSTGRES_PASSWORD, SECRET_KEY, ADMIN_PASSWORD, SITE_ADDRESS
@@ -229,7 +230,7 @@ as soon as the 3rd team solves it) · Code Golf 4 + 1 · Best Time Complexity 4 
 - **Super Fast:** only the first 3 teams to pass every hidden test score (4,000 · 3,000 · 2,000,
   editable), ordered by when their submission arrived, not when it was judged. The round ends
   (3 s countdown) as soon as the 3rd place is taken; the intro card and problem say so.
-- **Judge queue:** 4 workers, Submit always ahead of Run, one in flight per team, cooldowns
+- **Judge queue:** 4 workers by default (`JUDGE_WORKERS`; 2 in the DigitalOcean setup), Submit always ahead of Run, one in flight per team, cooldowns
   (Run 3 s, Submit 5 s), caps (60 runs / 20 submits per question). Outputs compared in the
   backend after trimming trailing whitespace. Judge0 outages retry and show a banner.
 - **Packed tests:** all of a submission's tests go to Judge0 as one submission; a runner in
