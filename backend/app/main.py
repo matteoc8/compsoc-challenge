@@ -25,7 +25,7 @@ from .limiter import limiter
 from .models import Quiz, Teacher
 from .realtime import ws
 from .realtime.hub import Hub
-from .routers import auth, games, join, media, play, quizzes
+from .routers import auth, games, join, media, play, problems, quizzes, weekly
 from .runtime import rt
 from .schemas.ws import WsMessage
 
@@ -48,13 +48,13 @@ async def seed(settings: Settings) -> None:
         teacher = await s.scalar(select(Teacher).order_by(Teacher.created_at))
         if not teacher:
             teacher = Teacher(
-                username=settings.teacher_username,
-                password_hash=hash_password(settings.teacher_password),
+                username=settings.admin_username,
+                password_hash=hash_password(settings.admin_password),
                 must_change_password=True,
             )
             s.add(teacher)
             await s.flush()
-            log.warning("Seeded teacher '%s'; the password must be changed on first login", teacher.username)
+            log.warning("Seeded admin '%s'; the password must be changed on first login", teacher.username)
         if settings.seed_sample_quiz and not await s.scalar(select(func.count()).where(Quiz.owner_id == teacher.id)):
             data = json.loads((BACKEND_DIR / "seed" / "sample_quiz.json").read_text(encoding="utf-8"))
             await quizzes.import_quiz_data(s, teacher, data)
@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     rt.executor = make_executor(settings)
     rt.queue = JudgeQueue(settings.judge_workers)
     rt.queue.start()
-    n = await judging.requeue_pending()
+    n = await judging.requeue_pending() + await weekly.requeue_pending()
     if n:
         log.info("re-queued %d pending submissions", n)
     await engine.rearm_all()
@@ -105,7 +105,7 @@ MAX_IMPORT_BODY = 20_500_000
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="CompSoc Challenge",
+        title="CompSoc",
         lifespan=lifespan,
         openapi_url="/api/openapi.json",
         docs_url="/api/docs",
@@ -136,7 +136,7 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
 
-    for r in (auth.router, quizzes.router, media.router, games.router, join.router, play.router):
+    for r in (auth.router, quizzes.router, media.router, games.router, join.router, play.router, problems.router, weekly.router):
         app.include_router(r, prefix="/api")
     app.include_router(ws.router)
 

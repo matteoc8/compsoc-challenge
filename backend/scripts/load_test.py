@@ -149,7 +149,7 @@ class Bot:
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:8080")
-    ap.add_argument("--username", default="teacher")
+    ap.add_argument("--username", default="admin")
     ap.add_argument("--password", required=True)
     ap.add_argument("--teams", type=int, default=15)
     ap.add_argument("--round-seconds", type=float, default=45, help="how long each question stays open")

@@ -28,8 +28,10 @@ export interface FullQuestion {
     benchmark?: { generator: string; sizes: number[]; repeats: number; cpu_limit_s: number; floor_ms: number } | null;
     options?: { text: string }[];
     correct?: number[];
+    hints?: string[];
   };
   time_limit_s: number;
+  unlimited_time: boolean;
   auto_end: { all_passed?: boolean; after_n_passed?: number | null };
   scoring: Record<string, unknown> & { mode: string };
   verified_at: string | null;
@@ -43,6 +45,14 @@ export const TYPE_NAMES: Record<QType, string> = {
   best_complexity: "Best Time Complexity",
 };
 
+/** New questions start as coding questions; the type is picked inside the question. */
+export const CODING_TYPES: QType[] = ["super_fast", "code_golf", "best_complexity"];
+export const DEFAULT_NEW_TYPE: QType = "super_fast";
+
+/** Partial credit applies to these scoring modes on coding questions. */
+const PARTIAL_MODES = ["closest", "flat", "ranked"];
+const DEFAULT_PARTIAL = 0.5;
+
 export const DEFAULT_HARNESS = `import sys as _sys
 _data = _sys.stdin.read().split()
 print(solve([int(x) for x in _data]))
@@ -55,8 +65,8 @@ export const DEFAULT_GENERATOR = `def gen(n, rng):
 
 export function defaultScoring(type: QType) {
   if (type === "multiple_choice") return { mode: "timed", max: 1000 };
-  if (type === "super_fast") return { mode: "ranked", points: [4000, 3000, 2000] };
-  return { mode: "closest", max: 4000, min_share: 0.5 };
+  if (type === "super_fast") return { mode: "ranked", points: [4000, 3000, 2000], partial_credit: DEFAULT_PARTIAL };
+  return { mode: "closest", max: 4000, min_share: 0.5, partial_credit: DEFAULT_PARTIAL };
 }
 
 const BLANK_OPTIONS = () => [{ text: "" }, { text: "" }, { text: "" }, { text: "" }];
@@ -92,6 +102,7 @@ export function newQuestionBody(type: QType, n: number) {
     starter_code: type === "best_complexity" ? "def solve(nums):\n    return 0\n" : "",
     reference_solution: "",
     ...typeDefaults(type),
+    unlimited_time: false,
     auto_end: {},
     scoring: defaultScoring(type),
   };
@@ -125,7 +136,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   return (
     <label className="block">
       <span className="mb-1 block text-sm font-semibold text-white">
-        {label} {hint && <span className="font-normal text-ink-400">· {hint}</span>}
+        {label} {hint && <span className="font-normal text-ink-400">({hint})</span>}
       </span>
       {children}
     </label>
@@ -144,6 +155,9 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
   const mcq = q.type === "multiple_choice";
   const presets = mcq ? [10, 20, 30, 60] : [180, 240, 300, 360];
   const [minT, maxT] = mcq ? [5, 240] : [60, 900];
+  // With no time limit the seconds only matter as the reference for speed-based points.
+  const usesSpeed = q.scoring.mode === "timed" || q.scoring.mode === "speed_weighted";
+  const partial = !mcq && PARTIAL_MODES.includes(q.scoring.mode);
 
   return (
     <div className="space-y-6">
@@ -160,11 +174,16 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
               onChange({ type, scoring: defaultScoring(type) as FullQuestion["scoring"], auto_end: {}, ...typeDefaults(type, cfg) });
             }}
           >
-            {(Object.keys(TYPE_NAMES) as QType[]).map((t) => (
-              <option key={t} value={t}>
-                {TYPE_NAMES[t]}
-              </option>
-            ))}
+            <optgroup label="Coding">
+              {CODING_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {TYPE_NAMES[t]}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Quiz">
+              <option value="multiple_choice">{TYPE_NAMES.multiple_choice}</option>
+            </optgroup>
           </select>
         </Field>
       </div>
@@ -198,7 +217,7 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
         </div>
         <div>
           <span className="mb-1 block text-sm font-semibold text-white">
-            Reference solution <span className="font-normal text-ink-400">· never sent to teams</span>
+            Reference solution <span className="font-normal text-ink-400">(never sent to teams)</span>
           </span>
           <div className="h-56 overflow-hidden rounded border border-ink-600">
             <CodeEditor value={q.reference_solution} onChange={(v) => onChange({ reference_solution: v })} ariaLabel="Reference solution" />
@@ -209,7 +228,7 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
         <div className="grid gap-4 lg:grid-cols-2">
           <div>
             <span className="mb-1 block text-sm font-semibold text-white">
-              I/O harness <span className="font-normal text-ink-400">· appended after the team&apos;s code: reads stdin, calls solve, prints</span>
+              I/O harness <span className="font-normal text-ink-400">(appended after the team&apos;s code: reads stdin, calls solve, prints)</span>
             </span>
             <div className="h-40 overflow-hidden rounded border border-ink-600">
               <CodeEditor value={cfg.harness ?? ""} onChange={(v) => setCfg({ harness: v })} ariaLabel="Harness" lint={false} />
@@ -217,7 +236,7 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
           </div>
           <div>
             <span className="mb-1 block text-sm font-semibold text-white">
-              Benchmark generator <span className="font-normal text-ink-400">· gen(n, rng) returns solve&apos;s arguments</span>
+              Benchmark generator <span className="font-normal text-ink-400">(gen(n, rng) returns solve&apos;s arguments)</span>
             </span>
             <div className="h-40 overflow-hidden rounded border border-ink-600">
               <CodeEditor
@@ -262,9 +281,19 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
       />
         </>
       )}
+      <HintsEditor hints={cfg.hints ?? []} onChange={(hints) => setCfg({ hints })} />
       <div className="grid gap-4 md:grid-cols-3">
-        <Field label="Time limit">
-          <div className="flex flex-wrap gap-1.5">
+        <Field label={q.unlimited_time ? "Time" : "Time limit"}>
+          <label className="mb-2 flex items-center gap-2 text-xs text-ink-200">
+            <input type="checkbox" checked={!!q.unlimited_time} onChange={(e) => onChange({ unlimited_time: e.target.checked })} />
+            No time limit: the clock counts up until I press End now
+          </label>
+          {q.unlimited_time && (
+            <p className="mb-1.5 text-xs text-ink-400">
+              {usesSpeed ? "Speed points use this as the reference time: answers after it get the slowest-answer points." : "This scoring mode doesn't use time."}
+            </p>
+          )}
+          <div className={`flex flex-wrap gap-1.5 ${q.unlimited_time && !usesSpeed ? "hidden" : ""}`}>
             {presets.map((s) => (
               <button key={s} onClick={() => onChange({ time_limit_s: s })} className={`rounded px-2.5 py-1 text-xs font-bold ${q.time_limit_s === s ? "bg-round-blue text-white" : "bg-ink-600 text-ink-200"}`}>
                 {mcq ? `${s} s` : `${s / 60} min`}
@@ -295,7 +324,7 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
       </div>
       {q.type === "super_fast" && q.scoring.mode === "ranked" && (
         <p className="rounded-md bg-round-red/10 p-3 text-sm text-ink-200">
-          Only the first {((q.scoring.points as number[]) ?? []).length} teams to pass every hidden test score, in order. The round ends automatically as soon
+          Only the first {((q.scoring.points as number[]) ?? []).length} teams to pass every hidden test score full points, in order; everyone else gets partial credit at the end. The round ends automatically as soon
           as the last scoring place is taken (or when every team has solved it). The intro card tells teams this.
         </p>
       )}
@@ -324,14 +353,15 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
               value={q.scoring.mode}
               onChange={(e) => {
                 const mode = e.target.value;
+                const keep = mcq ? {} : { partial_credit: Number(q.scoring.partial_credit ?? DEFAULT_PARTIAL) };
                 const base =
                   mode === "ranked"
-                    ? { mode, points: q.type === "super_fast" ? [4000, 3000, 2000] : [4000, 3200, 2400, 1600] }
+                    ? { mode, points: q.type === "super_fast" ? [4000, 3000, 2000] : [4000, 3200, 2400, 1600], ...keep }
                     : mode === "flat"
-                      ? { mode, max: mcq ? 1000 : 4000 }
+                      ? { mode, max: mcq ? 1000 : 4000, ...keep }
                       : mode === "speed_weighted"
                         ? { mode, max: 4000, speed_floor: 0.1, correctness_floor: 0.6, min_pass: 0.5 }
-                        : defaultScoring(q.type);
+                        : { ...defaultScoring(q.type), ...keep };
                 onChange({ scoring: base as FullQuestion["scoring"] });
               }}
             >
@@ -365,6 +395,19 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
               <input type="number" min={0} max={1} step={0.05} className={inputCls} value={Number(q.scoring.min_share)} onChange={(e) => setScoring({ min_share: num(e.target.value, 0.5) })} />
             </Field>
           )}
+          {partial && (
+            <Field label="Partial credit" hint="0 = off">
+              <input
+                type="number"
+                min={0}
+                max={0.95}
+                step={0.05}
+                className={inputCls}
+                value={Number(q.scoring.partial_credit ?? DEFAULT_PARTIAL)}
+                onChange={(e) => setScoring({ partial_credit: Math.min(0.95, Math.max(0, num(e.target.value, DEFAULT_PARTIAL))) })}
+              />
+            </Field>
+          )}
           {q.scoring.mode === "ranked" && (
             <Field label={q.type === "super_fast" ? "Points for 1st, 2nd, 3rd…" : "Points by position"} hint="comma-separated; one per scoring place">
               <input
@@ -382,7 +425,47 @@ export function QuestionForm({ q, onChange }: { q: FullQuestion; onChange: (patc
             </Field>
           )}
         </div>
+        {partial && Number(q.scoring.partial_credit ?? DEFAULT_PARTIAL) > 0 && (
+          <p className="mt-3 text-xs text-ink-400">
+            Teams that pass only some hidden tests score up to {Math.round(Number(q.scoring.partial_credit ?? DEFAULT_PARTIAL) * 100)}% of the lowest full-pass
+            score, so a full pass always beats a partial one. More tests passed always beats fewer; with the same number passed, the round&apos;s own rule breaks
+            the tie ({q.type === "code_golf" ? "fewer characters" : q.type === "best_complexity" ? "faster on the hidden tests" : "submitted earlier"}).
+          </p>
+        )}
       </fieldset>
+    </div>
+  );
+}
+
+function HintsEditor({ hints, onChange }: { hints: string[]; onChange: (hints: string[]) => void }) {
+  return (
+    <div>
+      <span className="mb-1 block text-sm font-semibold text-white">
+        Hints <span className="font-normal text-ink-400">(up to 10, in order; during the game you send them to a team or everyone from the console)</span>
+      </span>
+      <div className="space-y-2">
+        {hints.map((h, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <span className="mt-1.5 w-14 shrink-0 text-xs font-bold text-round-yellow">Hint {i + 1}</span>
+            <textarea
+              value={h}
+              rows={2}
+              maxLength={1000}
+              aria-label={`Hint ${i + 1}`}
+              onChange={(e) => onChange(hints.map((x, j) => (j === i ? e.target.value : x)))}
+              className="min-w-0 flex-1 rounded border border-ink-600 bg-ink-900 px-2 py-1.5 text-sm text-white focus:border-round-blue focus:outline-none"
+            />
+            <button onClick={() => onChange(hints.filter((_, j) => j !== i))} className="mt-1 rounded px-1.5 text-ink-400 hover:text-fail" aria-label={`Remove hint ${i + 1}`}>
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+      {hints.length < 10 && (
+        <button onClick={() => onChange([...hints, ""])} className="mt-2 rounded bg-ink-600 px-2.5 py-1 text-xs font-semibold text-ink-200 hover:bg-ink-500">
+          + Add hint
+        </button>
+      )}
     </div>
   );
 }
@@ -395,7 +478,7 @@ function McqAnswers({ q, onChange }: { q: FullQuestion; onChange: (patch: Partia
   return (
     <div>
       <span className="mb-1 block text-sm font-semibold text-white">
-        Answers <span className="font-normal text-ink-400">· 2 to 4; tick every correct one</span>
+        Answers <span className="font-normal text-ink-400">(2 to 4; tick every correct one)</span>
       </span>
       <div className="grid gap-2 md:grid-cols-2">
         {options.map((o, i) => (

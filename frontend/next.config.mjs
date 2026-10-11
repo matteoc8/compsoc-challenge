@@ -11,6 +11,10 @@ const nextConfig = {
   async rewrites() {
     return process.env.NODE_ENV === "development" ? [{ source: "/api/:path*", destination: `${backend}/api/:path*` }] : [];
   },
+  // The admin pages used to live under /teacher; keep old bookmarks working.
+  async redirects() {
+    return [{ source: "/teacher/:path*", destination: "/admin/:path*", permanent: false }];
+  },
   async headers() {
     return [
       {

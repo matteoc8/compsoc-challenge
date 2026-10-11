@@ -17,6 +17,8 @@ export type QType = "multiple_choice" | "super_fast" | "code_golf" | "best_compl
 
 export interface GameHeader {
   id: string;
+  mode?: "live" | "free_run";
+  duration_s?: number; // Free Run: the whole game's clock
   state: GameStateName;
   question_index: number;
   question_count: number;
@@ -25,6 +27,8 @@ export interface GameHeader {
   deadline: string | null;
   paused: boolean;
   remaining_ms: number | null;
+  elapsed_ms?: number | null; // since the question opened, pauses excluded (at server_time)
+  unlimited?: boolean; // no countdown: the clock counts up until the host ends it
   ending: boolean;
   ended_early: boolean;
   phase_ends_at: string | null;
@@ -59,6 +63,7 @@ export interface PublicQuestion {
   image_url: string | null;
   image_alt: string | null;
   time_limit_s: number;
+  unlimited_time?: boolean;
   scoring_max: number;
   starter_code?: string;
   examples?: IOCase[];
@@ -69,11 +74,30 @@ export interface PublicQuestion {
   golf_rule?: string;
   benchmark_sizes?: number[];
   options?: { index: number; text: string }[]; // multiple choice
-  correct?: number[]; // teacher console only
+  correct?: number[]; // host console only
+  hints?: string[]; // host console only; teams get them one at a time
+}
+
+export interface Hint {
+  index: number;
+  number: number;
+  text: string;
+}
+
+export interface Winner {
+  team_id: string;
+  name: string;
+  points: number;
+  code: string;
+  passed: number | null;
+  total: number | null;
+  chars: number;
+  class_label?: string | null;
 }
 
 export interface SubmissionResult {
   id: number;
+  question_id?: string;
   attempt: number;
   status: "queued" | "running" | "judged" | "error";
   passed: number | null;
@@ -126,6 +150,7 @@ export interface MonitorRow {
   choice?: number | null;
   correct?: boolean | null;
   answer_ms?: number | null;
+  hints?: number[]; // indexes of the hints this team has been given
 }
 
 export interface Progress {
@@ -168,6 +193,10 @@ export interface Results {
   floor_ms?: number;
   options?: { index: number; text: string; correct: boolean; count: number }[]; // multiple choice
   answered?: number;
+  spotlight?: "winner" | "solution" | null; // what the projector shows instead of the table
+  winner?: Winner; // once revealed
+  team_solution?: Winner; // Free Run analyse: the team being talked through
+  model_solution?: string; // once revealed
 }
 
 export interface Adjustment {
@@ -195,6 +224,7 @@ export interface Snapshot {
   my_submissions?: SubmissionResult[];
   my_question_points?: number | null;
   my_answer?: { choice: number } | null;
+  my_hints?: Hint[];
   monitor?: MonitorRow[];
   in_flight?: number;
   screen_token?: string;
@@ -202,6 +232,32 @@ export interface Snapshot {
   adjustments?: Adjustment[];
   settings?: { allow_negative_totals?: boolean; show_reasons?: boolean; sounds?: boolean };
   all_teams?: { team_id: string; name: string; kicked: boolean }[];
+  free_run?: FreeRun;
+}
+
+/** Free Run: one team on one problem. */
+export interface FreeRunCell {
+  status: "solved" | "partial" | "tried" | "judging" | "correct" | "wrong" | null;
+  points: number | null;
+  attempts: number;
+  passed?: number | null;
+  total?: number | null;
+}
+
+export interface FreeRun {
+  visible: number; // problems open so far (pause points hold the rest back)
+  total: number;
+  breaks: number[]; // pause after these question indexes
+  questions: { id: string; index: number; type: QType; type_label: string; section: number; locked: boolean; closed?: boolean; title?: string; hints?: string[] }[];
+  analysis?: { question_id: string; title: string; description_md: string; show: "results" | "winner" | "solution" | "team"; results: Results }; // the clock is paused
+  grid?: (BoardRow & { cells: Record<string, FreeRunCell> })[]; // projector and console
+  in_flight?: number; // console
+  // the team's own view
+  problems?: PublicQuestion[];
+  status?: Record<string, FreeRunCell>;
+  submissions?: Record<string, SubmissionResult[]>;
+  answers?: Record<string, number>;
+  hints?: Record<string, Hint[]>;
 }
 
 export interface PointsAdjusted {

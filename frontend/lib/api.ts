@@ -1,4 +1,4 @@
-// Typed REST client. Teacher calls use the httpOnly session cookie; team calls add the device token.
+// Typed REST client. Admin calls use the httpOnly session cookie; team calls add the device token.
 
 export class ApiError extends Error {
   constructor(
@@ -16,6 +16,8 @@ function describe(detail: unknown, status: number): string {
     // Pydantic validation errors
     return detail
       .map((d: { loc?: (string | number)[]; msg?: string }) => {
+        // Our own validators raise whole sentences ("Use your school email…"): show them as they are
+        if (d.msg?.startsWith("Value error, ")) return d.msg.slice("Value error, ".length);
         const where = (d.loc || []).filter((x) => x !== "body").join(" › ");
         return where ? `${where}: ${d.msg}` : d.msg;
       })

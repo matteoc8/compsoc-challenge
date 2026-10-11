@@ -372,9 +372,9 @@ function PlacesMeter() {
 }
 
 function SpeedMeter({ scoring, limitS }: { scoring?: Record<string, unknown>; limitS: number }) {
-  const { ms } = useRemaining();
+  const { ms, countUp, elapsed: up } = useRemaining();
   const limit = limitS * 1000;
-  const elapsed = ms == null ? 0 : Math.max(0, limit - ms);
+  const elapsed = countUp ? up ?? 0 : ms == null ? 0 : Math.max(0, limit - ms);
   const now = superFastEstimate(scoring, elapsed, limit, 1);
   return (
     <span className="flex items-center gap-2 rounded bg-round-red/20 px-2 py-0.5 text-xs text-white">

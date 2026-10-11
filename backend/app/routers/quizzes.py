@@ -18,7 +18,7 @@ from ..db import get_session
 from ..engine import judging
 from ..engine.serialize import serialize_question_full
 from ..media import BadImage, process_image, store
-from ..models import Game, Media, Question, Quiz, Submission, Teacher, utcnow
+from ..models import Game, Media, Question, Quiz, Submission, Teacher, WeeklyProblem, utcnow
 from ..schemas.question import QuestionIn
 
 router = APIRouter(tags=["quizzes"])
@@ -133,9 +133,13 @@ async def reorder(quiz_id: str, body: OrderIn, t: Teacher = Depends(current_teac
 def _apply(q: Question, body: QuestionIn) -> bool:
     """Copy fields; returns True if anything that affects judging changed."""
     new_cfg = body.config.model_dump()
+
+    def judged(cfg: dict) -> dict:
+        return {k: v for k, v in cfg.items() if k != "hints"}  # hints don't affect judging
+
     judged_changed = (
         q.reference_solution != body.reference_solution
-        or (q.config or {}) != new_cfg
+        or judged(q.config or {}) != judged(new_cfg)
         or q.type != body.type
     )
     q.round_name = body.round_name
@@ -148,6 +152,7 @@ def _apply(q: Question, body: QuestionIn) -> bool:
     q.reference_solution = body.reference_solution
     q.config = new_cfg
     q.time_limit_s = body.time_limit_s
+    q.unlimited_time = body.unlimited_time
     q.auto_end = body.auto_end.model_dump()
     q.scoring = body.scoring.model_dump()
     q.updated_at = utcnow()
@@ -203,6 +208,8 @@ async def delete_question(question_id: str, t: Teacher = Depends(current_teacher
         raise HTTPException(409, "Teams have submitted to this question in a game, so it can't be deleted")
     if await s.scalar(select(func.count()).where(Game.current_question_id == q.id)):
         raise HTTPException(409, "This question is in use by a game")
+    if await s.scalar(select(func.count()).where(WeeklyProblem.question_id == q.id)):
+        raise HTTPException(409, "This question is a problem of the week, so it can't be deleted")
     await s.delete(q)
     await s.flush()
     rest = await questions_of(s, quiz.id)
@@ -231,6 +238,7 @@ async def duplicate_question(question_id: str, t: Teacher = Depends(current_teac
         reference_solution=q.reference_solution,
         config=q.config,
         time_limit_s=q.time_limit_s,
+        unlimited_time=q.unlimited_time,
         auto_end=q.auto_end,
         scoring=q.scoring,
         verified_at=q.verified_at,

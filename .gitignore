@@ -9,3 +9,6 @@ backend/media/
 node_modules/
 .next/
 e2e-shots/
+# database backups (they hold people's names and emails)
+*.db.backup*
+backend/backups/

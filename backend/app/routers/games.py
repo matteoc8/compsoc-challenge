@@ -5,6 +5,8 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -15,14 +17,19 @@ from ..auth import current_teacher
 from ..db import get_session, session_scope
 from ..engine.game import engine, new_join_code
 from ..engine.views import quiz_questions
-from ..models import Game, Quiz, Teacher
+from ..models import CodeDraft, Game, Question, Quiz, Submission, Team, Teacher
 
 router = APIRouter(prefix="/games", tags=["games"])
 
 
 class NewGameIn(BaseModel):
     quiz_id: str
+    mode: Literal["live", "free_run"] = "live"
+    minutes: int = Field(default=60, ge=5, le=360)  # Free Run: the one clock for the whole game
 
+
+class BreaksIn(BaseModel):
+    breaks: list[int] = Field(max_length=200)  # Free Run: pause after these question indexes
 
 class ExpectIn(BaseModel):
     expect_state: str | None = None
@@ -34,7 +41,7 @@ class StartIn(ExpectIn):
 
 class AdjustTimeIn(BaseModel):
     delta_s: float | None = Field(default=None, ge=-3600, le=3600)
-    set_remaining_s: float | None = Field(default=None, ge=1, le=3600)
+    set_remaining_s: float | None = Field(default=None, ge=1, le=6 * 3600)
 
     @model_validator(mode="after")
     def _one(self):
@@ -86,6 +93,7 @@ def game_summary(g: Game, quiz_title: str | None = None) -> dict:
         "quiz_title": quiz_title,
         "join_code": g.join_code,
         "state": g.state.value,
+        "mode": g.mode or "live",
         "created_at": g.created_at.isoformat(),
         "screen_token": g.screen_token,
     }
@@ -115,7 +123,13 @@ async def create_game(body: NewGameIn, t: Teacher = Depends(current_teacher)):
                     owner_id=t.id,
                     join_code=new_join_code(),
                     screen_token=secrets.token_urlsafe(24),
-                    settings={"show_reasons": True, "sounds": True, **settings},
+                    settings={
+                        "show_reasons": True,
+                        "sounds": True,
+                        **settings,
+                        **({"duration_s": body.minutes * 60} if body.mode == "free_run" else {}),
+                    },
+                    mode=body.mode,
                 )
                 s.add(g)
                 await s.flush()
@@ -288,3 +302,136 @@ async def get_analytics_csv(game_id: str, kind: str = "teams", t: Teacher = Depe
         headers={"Content-Disposition": f'attachment; filename="compsoc-{g.join_code}-{kind}.csv"'},
     )
 
+
+
+# ------------------------------------------------------------------ during a question
+
+
+class HintIn(BaseModel):
+    hint_index: int = Field(ge=0, le=9)
+    team_id: str | None = None  # None = every team that hasn't had it
+    question_id: str | None = None  # Free Run: which problem
+
+
+class SpotlightIn(BaseModel):
+    show: str  # results | winner | solution
+
+
+@router.post("/{game_id}/hints")
+async def give_hint(game_id: str, body: HintIn, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    return {"sent": await engine.give_hint(game_id, body.hint_index, body.team_id, body.question_id)}
+
+
+@router.post("/{game_id}/breaks")
+async def set_breaks(game_id: str, body: BreaksIn, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.set_breaks(game_id, body.breaks)
+    return {"ok": True}
+
+
+class AnalyseIn(BaseModel):
+    question_id: str
+
+
+class AnalyseShowIn(BaseModel):
+    show: str  # results | winner | solution | team
+    team_id: str | None = None  # show == "team"
+
+
+class AnalyseEndIn(BaseModel):
+    lock: bool
+
+
+@router.post("/{game_id}/analyse")
+async def analyse(game_id: str, body: AnalyseIn, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.start_analysis(game_id, body.question_id)
+    return {"ok": True}
+
+
+@router.post("/{game_id}/analyse/show")
+async def analyse_show(game_id: str, body: AnalyseShowIn, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.show_analysis(game_id, body.show, body.team_id)
+    return {"ok": True}
+
+
+@router.post("/{game_id}/analyse/end")
+async def analyse_end(game_id: str, body: AnalyseEndIn, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.end_analysis(game_id, body.lock)
+    return {"ok": True}
+
+
+@router.post("/{game_id}/unlock-next")
+async def unlock_next(game_id: str, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.unlock_next(game_id)
+    return {"ok": True}
+
+
+@router.post("/{game_id}/spotlight")
+async def spotlight(game_id: str, body: SpotlightIn, t: Teacher = Depends(current_teacher)):
+    await check_owner(game_id, t)
+    await engine.spotlight(game_id, body.show)
+    return {"ok": True}
+
+
+def _clip(text: str | None, n: int = 2000) -> str:
+    text = text or ""
+    return text if len(text) <= n else text[:n] + "\n… (cut)"
+
+
+@router.get("/{game_id}/teams/{team_id}/work")
+async def team_work(
+    game_id: str, team_id: str, question_id: str | None = None, t: Teacher = Depends(current_teacher), s: AsyncSession = Depends(get_session)
+):
+    """A team's code for a question: what's in their editor now, and every submission with
+    each hidden test's input, expected and actual output (teacher only)."""
+    g = await own_game(s, game_id, t)
+    try:
+        team = await s.get(Team, uuid.UUID(team_id))
+        q = await s.get(Question, uuid.UUID(question_id)) if question_id else (await s.get(Question, g.current_question_id) if g.current_question_id else None)
+    except ValueError:
+        team = q = None
+    if not team or team.game_id != g.id:
+        raise HTTPException(404, "Unknown team")
+    if not q or q.quiz_id != g.quiz_id:
+        raise HTTPException(404, "No question to show")
+    draft = await s.get(CodeDraft, (g.id, q.id, team.id))
+    subs = (
+        await s.scalars(
+            select(Submission).where(Submission.game_id == g.id, Submission.question_id == q.id, Submission.team_id == team.id).order_by(Submission.attempt_no)
+        )
+    ).all()
+    tests = (q.config or {}).get("tests") or []
+    return {
+        "team": {"team_id": str(team.id), "name": team.name},
+        "question": {"id": str(q.id), "title": q.title, "type": q.type.value},
+        "draft": {"code": draft.code, "saved_at": draft.saved_at.isoformat()} if draft else None,
+        "submissions": [
+            {
+                "attempt": x.attempt_no,
+                "status": x.status.value,
+                "code": x.code,
+                "passed": x.tests_passed,
+                "total": x.tests_total,
+                "verdict": x.verdict,
+                "chars": x.char_count,
+                "elapsed_ms": x.elapsed_ms,
+                "error_summary": x.error_summary,
+                "tests": [
+                    {
+                        "index": i + 1,
+                        **r,
+                        "stdout": _clip(r.get("stdout")),
+                        "stdin": _clip(tests[i]["stdin"]) if i < len(tests) else "",
+                        "expected": _clip(tests[i]["expected"]) if i < len(tests) else "",
+                    }
+                    for i, r in enumerate(x.test_results or [])
+                ],
+            }
+            for x in subs
+        ],
+    }

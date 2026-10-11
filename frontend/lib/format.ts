@@ -34,3 +34,13 @@ export const TYPE_ACCENT: Record<string, string> = {
   code_golf: "#2E86DE",
   best_complexity: "#21A68D",
 };
+
+/** "4 days left", "5 hours left", "12 min left" until an ISO time. */
+export function timeLeft(iso: string): string {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "closing now";
+  const h = Math.floor(ms / 3_600_000);
+  if (h >= 48) return `${Math.floor(h / 24)} days left`;
+  if (h >= 1) return `${h} hour${h === 1 ? "" : "s"} left`;
+  return `${Math.max(1, Math.floor(ms / 60_000))} min left`;
+}

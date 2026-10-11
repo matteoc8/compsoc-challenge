@@ -16,9 +16,11 @@ class GameHeader(BaseModel):
     deadline: str | None
     paused: bool
     remaining_ms: int | None
+    elapsed_ms: int | None = None  # since the question opened, pauses excluded
     ending: bool
     ended_early: bool
     phase_ends_at: str | None
+    unlimited: bool = False  # no countdown: the clock counts up until the teacher ends it
     server_time: str
     judge_ok: bool
     join_code: str | None = None
@@ -96,6 +98,7 @@ class TimerUpdate(BaseModel):
     deadline: str | None
     paused: bool
     remaining_ms: int | None
+    elapsed_ms: int | None = None  # since the question opened, pauses excluded
     ending: bool
     server_time: str
 

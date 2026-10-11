@@ -182,7 +182,7 @@ function SubmitBanner({ sub, judging, qtype, onOpen }: { sub?: SubmissionResult;
         {sub.first_failed ? ` · first failing test: #${sub.first_failed}` : ""}
         {sub.error_summary ? ` · ${sub.error_summary}` : ""}
         {qtype === "code_golf" && full ? ` · ${sub.chars} characters` : ""}
-        {sub.provisional && sub.points != null ? " · provisional until time is up" : ""}
+        {sub.provisional && sub.points != null ? " (provisional until time is up)" : ""}
       </div>
     </button>
   );

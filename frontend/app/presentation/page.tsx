@@ -1,8 +1,10 @@
 "use client";
-// Projector. Opened from the teacher console with the read-only screen token.
+// Projector. Opened from the host console with the read-only screen token.
 
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { FreeRunAnalysis } from "@/components/freerun/FreeRunAnalysis";
+import { FreeRunGrid } from "@/components/freerun/FreeRunGrid";
 import { Leaderboard } from "@/components/leaderboard/Leaderboard";
 import { Podium } from "@/components/leaderboard/Podium";
 import { McqResults, McqStage } from "@/components/mcq/McqViews";
@@ -10,6 +12,7 @@ import { RingCountdown } from "@/components/stage/Countdown";
 import { Lobby } from "@/components/stage/Lobby";
 import { ProgressStrip } from "@/components/stage/ProgressStrip";
 import { MeasuringSpeed, ResultsView } from "@/components/stage/Results";
+import { SolutionSpotlight, WinnerSpotlight } from "@/components/stage/Reveal";
 import { RoundIntro } from "@/components/stage/RoundIntro";
 import { ConnectionBadge } from "@/components/ui/ConnectionBadge";
 import { Markdown } from "@/components/ui/Markdown";
@@ -47,8 +50,8 @@ function Presentation() {
     lastState.current = s;
   }, [snap?.game.state, started, soundsOn]);
 
-  if (!game || !token) return <Message text="Open the projector link from the teacher console." />;
-  if (status === "unauthorised") return <Message text="This projector link isn't valid. Open it again from the teacher console." />;
+  if (!game || !token) return <Message text="Open the projector link from the host console." />;
+  if (status === "unauthorised") return <Message text="This projector link isn't valid. Open it again from the host console." />;
 
   if (!started) {
     return (
@@ -74,12 +77,39 @@ function Presentation() {
   const q = snap.question;
   const accent = q ? TYPE_ACCENT[q.type] : "#F6B73C";
   const mcq = q?.type === "multiple_choice";
+  const freeRun = snap.game.mode === "free_run" && snap.free_run;
 
   return (
     <main className="stage-bg relative h-screen overflow-hidden text-white">
       {state === "lobby" && <Lobby />}
+      {freeRun && snap.free_run!.analysis && (state === "open" || state === "paused") && <FreeRunAnalysis analysis={snap.free_run!.analysis} />}
+      {freeRun && !snap.free_run!.analysis && (state === "open" || state === "paused" || state === "closed") && (
+        <div className="flex h-full flex-col gap-6 p-10">
+          <div className="flex items-center justify-between gap-8">
+            <div>
+              <div className="font-stage text-2xl font-extrabold uppercase tracking-widest text-white/80">Free Run</div>
+              <h1 className="mt-1 font-stage text-6xl font-black">{BRAND.event}</h1>
+              <p className="mt-2 font-stage text-2xl font-bold text-white/80">
+                {snap.free_run!.visible < snap.free_run!.total
+                  ? `Problems 1–${snap.free_run!.visible} of ${snap.free_run!.total} open`
+                  : `All ${snap.free_run!.total} problems open`}
+                {snap.game.join_code ? ` (join with ${snap.game.join_code})` : ""}
+              </p>
+            </div>
+            <RingCountdown size={220} sound={soundsOn} />
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <FreeRunGrid fr={snap.free_run!} stage limit={14} />
+          </div>
+          {state === "closed" && (
+            <div className="absolute inset-0 flex items-center justify-center bg-stage-deep/85">
+              <h1 className="animate-pop font-stage text-9xl font-black">Time&apos;s up!</h1>
+            </div>
+          )}
+        </div>
+      )}
       {state === "round_intro" && snap.intro && <RoundIntro intro={snap.intro} />}
-      {(state === "open" || state === "paused" || state === "closed") && q && mcq && (
+      {!freeRun && (state === "open" || state === "paused" || state === "closed") && q && mcq && (
         <div className="relative h-full">
           <McqStage q={q} sound={soundsOn} />
           {state === "closed" && (
@@ -89,7 +119,7 @@ function Presentation() {
           )}
         </div>
       )}
-      {(state === "open" || state === "paused" || state === "closed") && q && !mcq && (
+      {!freeRun && (state === "open" || state === "paused" || state === "closed") && q && !mcq && (
         <div className="flex h-full flex-col gap-6 p-10">
           <div className="flex items-start justify-between gap-8">
             <div className="min-w-0 flex-1">
@@ -122,7 +152,17 @@ function Presentation() {
       )}
       {state === "judging" && <MeasuringSpeed />}
       {state === "results" && snap.results?.type === "multiple_choice" && <McqResults results={snap.results} />}
-      {state === "results" && snap.results && snap.results.type !== "multiple_choice" && <ResultsView results={snap.results} />}
+      {state === "results" && snap.results && snap.results.type !== "multiple_choice" && (
+        <>
+          {snap.results.spotlight === "winner" && snap.results.winner ? (
+            <WinnerSpotlight winner={snap.results.winner} type={snap.results.type} />
+          ) : snap.results.spotlight === "solution" && snap.results.model_solution != null ? (
+            <SolutionSpotlight code={snap.results.model_solution} />
+          ) : (
+            <ResultsView results={snap.results} />
+          )}
+        </>
+      )}
       {state === "leaderboard" && (
         <div className="h-full overflow-hidden p-10">
           <Leaderboard rows={snap.leaderboard} />
@@ -137,7 +177,7 @@ function Presentation() {
         className="absolute bottom-4 right-4 rounded-full bg-black/30 px-4 py-2 font-stage text-sm font-bold text-white/80 hover:bg-black/50"
         aria-pressed={muted}
       >
-        {muted ? "🔇 Sound off" : "🔊 Sound on"}
+        {muted ? "Sound off" : "Sound on"}
       </button>
       <ConnectionBadge />
     </main>

@@ -1,4 +1,4 @@
-from app.engine.scoring import Entry, closest_points, score_at_close, super_fast_points, timed_points
+from app.engine.scoring import Entry, Partial, closest_points, full_pass_floor, partial_points, score_at_close, super_fast_points, timed_points
 from app.judge.benchmark import estimate_class, slope
 from app.judge.client import normalise_output, outputs_match, summarise_error
 from app.judge.golf import golf_chars
@@ -90,3 +90,35 @@ def test_complexity_estimates():
     assert est({500: 400}, 2000).startswith("≈ O(n²)")
     assert est({}, 500) == "too slow"
     assert est({500: 5, 2000: 400, 8000: 30000}).startswith("≈ O(n³)")
+
+
+def test_partial_credit_examples():
+    """More tests passed always wins; inside the same count the round's rule breaks ties;
+    every partial score stays below any full pass."""
+    golf = Closest()  # floor for a full pass: 2000, so partial credit tops out at 1000
+    pts = partial_points(golf, [Partial("a", 7, 10, 500), Partial("b", 6, 10, 300), Partial("c", 7, 10, 250)])
+    assert pts["a"] > pts["b"]  # 7/10 with 500 chars beats 6/10 with 300
+    assert pts["c"] > pts["a"]  # same count: fewer characters wins
+    assert pts["c"] == 700 and pts["b"] == 600  # best in its band takes the top of the band
+    assert max(pts.values()) < full_pass_floor(golf)
+    # two full passes, 400 and 200 characters: the shorter one scores more (unchanged rule)
+    full = score_at_close(golf, [Entry("x", 400, 1), Entry("y", 200, 2)])
+    assert full["y"] > full["x"] > max(pts.values())
+
+
+def test_partial_credit_bands_never_overlap():
+    rule = Closest()
+    for k in range(1, 10):
+        worst_higher = partial_points(rule, [Partial("best", k + 1, 10, 1), Partial("worst", k + 1, 10, 10_000)])["worst"]
+        best_lower = partial_points(rule, [Partial("only", k, 10, 1)])["only"]
+        assert worst_higher > best_lower
+
+
+def test_partial_credit_rules():
+    assert partial_points(Closest(partial_credit=0), [Partial("a", 9, 10, 1)]) == {"a": 0}  # turned off
+    assert partial_points(Closest(), [Partial("a", 0, 10, 1)]) == {"a": 0}
+    ranked = Ranked()  # [4000, 3000, 2000]: cap 1000
+    assert partial_points(ranked, [Partial("late", 10, 10, 5000)]) == {"late": 1000}  # unplaced full solve
+    assert partial_points(Flat(), [Partial("a", 5, 10, 999), Partial("b", 5, 10, 1)]) == {"a": 1000, "b": 1000}
+    # no measurement (e.g. no test time) still lands in its band, at the bottom of it
+    assert partial_points(Closest(), [Partial("a", 3, 10, None), Partial("b", 3, 10, 50)]) == {"a": 250, "b": 300}

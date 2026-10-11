@@ -52,8 +52,9 @@ super_fast = {
     "description_md": (
         "Read **one line** of text and print how many vowels it contains.\n\n"
         "Vowels are `a e i o u`, in upper or lower case. `y` is **not** a vowel.\n\n"
-        "**First three win:** only the first three teams to pass *every* hidden test score "
-        "(4,000 · 3,000 · 2,000 points). The round ends as soon as the third team gets it."
+        "**First three win:** the first three teams to pass *every* hidden test score "
+        "(4,000 · 3,000 · 2,000 points). The round ends as soon as the third team gets it. "
+        "Everyone else gets partial credit for the tests they pass (up to 1,000)."
     ),
     "starter_code": "line = input()\n\n# Print the number of vowels in line\n",
     "reference_solution": VOWELS_REF,
@@ -79,8 +80,9 @@ code_golf = {
     "description_md": (
         "Read an integer `n` (1 ≤ n ≤ 30) and print a staircase of `#` that is `n` steps tall, "
         "**aligned to the right**: line `i` has `n - i` spaces followed by `i` hashes.\n\n"
-        "**Shortest correct code wins.** Every hidden test must pass; your shortest passing "
-        "submission counts, so keep shaving characters until the buzzer."
+        "**Shortest correct code wins.** Pass every hidden test to score fully; your shortest passing "
+        "submission counts, so keep shaving characters until the buzzer. Passing only some tests "
+        "still earns partial credit: more tests first, then fewer characters."
     ),
     "starter_code": "n = int(input())\n",
     "reference_solution": STAIRS_REF,
@@ -147,7 +149,8 @@ best_complexity = {
         "You only write the function: we read the input and print your answer.\n\n"
         "**Fastest correct code on big inputs wins.** Once time is up, every correct solution "
         "is run on inputs of 500, 2,000 and 8,000 numbers, and ranked by its time on the largest. "
-        "Your latest passing submission is the one measured."
+        "Your latest passing submission is the one measured. Solutions that pass only some tests "
+        "get partial credit: more tests first, then faster on the tests."
     ),
     "starter_code": (
         "from typing import List\n\n\n"

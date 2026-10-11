@@ -77,3 +77,58 @@ def score_at_close(rule: Closest | Flat | Ranked, entries: list[Entry]) -> dict[
     for e in unmeasured:
         out[e.team_id] = _round(rule.max * rule.min_share)
     return out
+
+
+@dataclass
+class Partial:
+    team_id: str
+    passed: int
+    total: int
+    value: float | None = None  # the round's own measure (chars, test time, submit time); lower is better
+
+
+PARTIAL_TIE_SHARE = 0.5  # within a band, the worst tie-break still keeps half the band
+
+
+def full_pass_floor(rule: Closest | Flat | Ranked) -> int:
+    """The least a scoring full pass can get under this rule (before anything is measured)."""
+    if isinstance(rule, Ranked):
+        return min(rule.points)
+    if isinstance(rule, Closest):
+        return _round(rule.max * rule.min_share)
+    return rule.max
+
+
+def partial_points(rule: Closest | Flat | Ranked, entries: list[Partial]) -> dict[str, int]:
+    """Partial credit. With C = partial_credit × full_pass_floor and n tests, k passed tests
+    land in the band (C·(k−1)/n, C·k/n], so more tests always beats fewer and every partial
+    score is below any scoring full pass. Inside a band the round's own rule breaks ties,
+    closest-to-best like the full-pass scoring (Flat has no tie-break: top of the band).
+
+    A full pass that scored nothing (e.g. a 4th Super Fast solve) counts as band k = n."""
+    cap = rule.partial_credit * full_pass_floor(rule)
+    out: dict[str, int] = {}
+    best: dict[tuple[int, int], float] = {}
+    for e in entries:
+        if e.passed > 0 and e.value is not None and e.value > 0:
+            key = (e.passed, e.total)
+            best[key] = min(best.get(key, e.value), e.value)
+    for e in entries:
+        if cap <= 0 or e.passed <= 0 or e.total <= 0:
+            out[e.team_id] = 0
+            continue
+        k = min(e.passed, e.total)
+        width = cap / e.total
+        if isinstance(rule, Flat):
+            share = 1.0
+        else:
+            b = best.get((e.passed, e.total))
+            if e.value is None:
+                ratio = 0.0
+            elif e.value <= 0 or b is None:
+                ratio = 1.0
+            else:
+                ratio = min(b / e.value, 1.0)
+            share = PARTIAL_TIE_SHARE + (1 - PARTIAL_TIE_SHARE) * ratio
+        out[e.team_id] = _round(width * (k - 1) + width * share)
+    return out

@@ -141,6 +141,9 @@ class Question(Base):
     reference_solution: Mapped[str] = mapped_column(Text)  # never sent to teams
     config: Mapped[dict] = mapped_column(JSONType)  # examples, hidden tests, limits, benchmark
     time_limit_s: Mapped[int] = mapped_column(Integer, default=240)
+    # added: no countdown; the clock counts up until the teacher ends the question.
+    # time_limit_s is then only the reference time for speed-based scoring.
+    unlimited_time: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     auto_end: Mapped[dict] = mapped_column(JSONType, default=dict)
     scoring: Mapped[dict] = mapped_column(JSONType)
     verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
@@ -155,6 +158,9 @@ class Game(Base):
     join_code: Mapped[str] = mapped_column(String(6), unique=True)
     screen_token: Mapped[str] = mapped_column(Text)  # added: read-only projector token
     state: Mapped[GameState] = mapped_column(_enum(GameState, "game_state"), default=GameState.lobby)
+    # added: "live" (the host moves everyone through one question at a time) or "free_run"
+    # (every unlocked problem open at once, one clock for the whole game)
+    mode: Mapped[str] = mapped_column(Text, default="live", server_default="live")
     question_index: Mapped[int] = mapped_column(Integer, default=-1)  # added
     current_question_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("questions.id"), nullable=True
@@ -213,6 +219,8 @@ class Submission(Base):
     exec_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     memory_kb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     perf: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # best complexity: {n: median_ms}
+    # added: per hidden test {passed, status, time_ms, stdout, stderr}; teacher console only
+    test_results: Mapped[list | None] = mapped_column(JSONType, nullable=True)
     provisional_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # never test data
     submitted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -244,6 +252,19 @@ class Answer(Base):
     choice: Mapped[int] = mapped_column(Integer)
     correct: Mapped[bool] = mapped_column(Boolean)
     elapsed_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class HintGiven(Base):
+    """added: a hint the teacher sent to a team during a question (index into config.hints)."""
+
+    __tablename__ = "hints_given"
+    __table_args__ = (UniqueConstraint("game_id", "question_id", "team_id", "hint_index", name="hint_once_uq"),)
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    game_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("games.id", ondelete="CASCADE"))
+    question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("questions.id"))
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"))
+    hint_index: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -283,6 +304,123 @@ class ScoreEvent(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("teachers.id"), nullable=True)
     undoes_id: Mapped[int | None] = mapped_column(ForeignKey("score_events.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class ProblemSubmission(Base):
+    """added: a problem anyone can suggest on the public site; the teacher reviews the queue."""
+
+    __tablename__ = "problem_submissions"
+    __table_args__ = (
+        CheckConstraint("length(title) between 1 and 120", name="ps_title_len"),
+        Index("problem_submissions_status", "status", "created_at"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    author_name: Mapped[str] = mapped_column(Text)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)  # for the teacher's reply; never public
+    title: Mapped[str] = mapped_column(Text)
+    intended_use: Mapped[str] = mapped_column(Text, default="either")  # added: challenge, weekly, either
+    description_md: Mapped[str] = mapped_column(Text)
+    examples: Mapped[list] = mapped_column(JSONType, default=list)  # [{stdin, expected}]
+    solution: Mapped[str] = mapped_column(Text, default="")  # optional, never public
+    notes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(Text, default="pending")  # pending, accepted, rejected
+    teacher_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    emailed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class ProblemGroup(Base):
+    """added: a named section of the public problems page, e.g. one event's problems."""
+
+    __tablename__ = "problem_groups"
+    __table_args__ = (CheckConstraint("length(name) between 1 and 60", name="pg_name_len"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teachers.id"))
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class FeaturedProblem(Base):
+    """added: a problem the teacher publishes on the site, with a solution students can reveal."""
+
+    __tablename__ = "featured_problems"
+    __table_args__ = (CheckConstraint("length(title) between 1 and 120", name="fp_title_len"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teachers.id"))
+    title: Mapped[str] = mapped_column(Text)
+    difficulty: Mapped[str] = mapped_column(Text, default="medium")  # easy, medium, hard
+    description_md: Mapped[str] = mapped_column(Text, default="")
+    examples: Mapped[list] = mapped_column(JSONType, default=list)  # [{stdin, expected}]
+    solution_code: Mapped[str] = mapped_column(Text, default="")
+    solution_md: Mapped[str] = mapped_column(Text, default="")  # explanation
+    credit: Mapped[str | None] = mapped_column(Text, nullable=True)  # e.g. who suggested it
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    group_id: Mapped[uuid.UUID | None] = mapped_column(  # added: section on the problems page
+        ForeignKey("problem_groups.id", ondelete="SET NULL"), nullable=True
+    )
+    source_submission_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("problem_submissions.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class WeeklyProblem(Base):
+    """added: problem of the week. The problem itself is a verified coding question from one
+    of the teacher's quizzes, so it's written and checked in the normal editor."""
+
+    __tablename__ = "weekly_problems"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teachers.id"))
+    question_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("questions.id"))
+    opens_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    closes_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    solution_published: Mapped[bool] = mapped_column(Boolean, default=False)  # shown once it has closed
+    credit: Mapped[str | None] = mapped_column(Text, nullable=True)  # added: e.g. "Submitted by Sam Smith"
+    featured_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)  # added: copied to Past Weekly Problems
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class WeeklyEntry(Base):
+    """added: one submission to a problem of the week. People are told apart by email."""
+
+    __tablename__ = "weekly_entries"
+    __table_args__ = (
+        CheckConstraint("length(code) <= 10000", name="weekly_code_len"),
+        Index("weekly_entries_lookup", "weekly_id", "email"),
+    )
+    id: Mapped[int] = mapped_column(BigId, primary_key=True, autoincrement=True)
+    weekly_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("weekly_problems.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text)
+    email: Mapped[str] = mapped_column(Text)  # lower-cased; never public
+    code: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(Text, default="queued")  # queued, running, measuring, judged, error
+    tests_passed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tests_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verdict: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exec_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    perf: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # best complexity benchmark
+    submitted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    judged_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class WeeklyPerson(Base):
+    """added: someone who enters the problem of the week. Their school email links every week's
+    entries; the name is fixed at first entry (an admin can change it, or ban the email)."""
+
+    __tablename__ = "weekly_people"
+    email: Mapped[str] = mapped_column(Text, primary_key=True)  # lower-cased; never public
+    name: Mapped[str] = mapped_column(Text)
+    year_group: Mapped[str | None] = mapped_column(Text, nullable=True)  # 4, 5, 6, L8, U8
+    banned: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 

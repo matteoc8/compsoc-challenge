@@ -4,13 +4,17 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { FreeRunPlay } from "@/components/freerun/FreeRunPlay";
 import { Leaderboard } from "@/components/leaderboard/Leaderboard";
 import { McqPlay, McqResults } from "@/components/mcq/McqViews";
 import { Podium } from "@/components/leaderboard/Podium";
+import { TeamReveals } from "@/components/stage/Reveal";
 import { MeasuringSpeed, ResultsView } from "@/components/stage/Results";
+import { InlineCountdown } from "@/components/stage/Countdown";
 import { RoundIntro } from "@/components/stage/RoundIntro";
 import { ConnectionBadge } from "@/components/ui/ConnectionBadge";
 import { Toasts } from "@/components/ui/Toasts";
+import { HintsStrip } from "@/components/workspace/HintsStrip";
 import { Workspace } from "@/components/workspace/Workspace";
 import { api, getTeamToken, setTeamToken } from "@/lib/api";
 import { BRAND } from "@/lib/brand";
@@ -87,13 +91,16 @@ export default function PlayPage() {
 
   const state = snap.game.state;
   const q = snap.question;
-  const inQuestion = (state === "open" || state === "paused" || state === "closed" || state === "judging") && q;
+  const freeRun = snap.game.mode === "free_run";
+  const running = state === "open" || state === "paused" || state === "closed" || state === "judging";
+  const inQuestion = running && !freeRun && q;
 
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-center justify-between gap-4 border-b-2 border-accent bg-stage-deep px-4 py-1.5 text-white">
         <span className="font-stage text-lg font-black">{BRAND.event}</span>
         <div className="flex items-center gap-4 font-stage text-sm font-bold">
+          {freeRun && running && <InlineCountdown className="text-base" />}
           {!snap.game.judge_ok && <span className="rounded bg-round-yellow px-2 py-0.5 text-black">Judge unavailable, retrying…</span>}
           <span>{snap.me?.name}</span>
           <span className="rounded bg-white/15 px-2 py-0.5 tabular-nums">{fmtPoints(snap.me?.points)} pts</span>
@@ -104,8 +111,10 @@ export default function PlayPage() {
           )}
         </div>
       </header>
+      {inQuestion && <HintsStrip />}
       <main className="min-h-0 flex-1">
         {state === "lobby" && <LobbyView token={token} scope={snap.game.id} />}
+        {freeRun && running && <FreeRunPlay token={token} />}
         {state === "round_intro" && snap.intro && <RoundIntro intro={snap.intro} compact />}
         {inQuestion && q.type === "multiple_choice" && <McqPlay q={q} token={token} />}
         {inQuestion && q.type !== "multiple_choice" && (
@@ -135,6 +144,7 @@ export default function PlayPage() {
         {state === "results" && snap.results && snap.results.type !== "multiple_choice" && (
           <div className="stage-bg h-full overflow-y-auto">
             <MyResult />
+            <TeamReveals results={snap.results} />
             <ResultsView results={snap.results} compact myTeamId={snap.me?.team_id} />
           </div>
         )}
@@ -142,7 +152,7 @@ export default function PlayPage() {
           <div className="stage-bg h-full overflow-y-auto p-6">
             <Leaderboard rows={snap.leaderboard} highlight={snap.me?.team_id} compact limit={20} />
             <p className="mt-6 text-center font-stage text-xl font-bold text-white/80">
-              {snap.game.question_index + 1 < snap.game.question_count ? "Get ready for the next question…" : "Waiting for the podium…"}
+              {!freeRun && snap.game.question_index + 1 < snap.game.question_count ? "Get ready for the next question…" : "Waiting for the podium…"}
             </p>
           </div>
         )}
@@ -199,7 +209,7 @@ function LobbyView({ token, scope }: { token: string; scope: string }) {
     <div className="flex h-full flex-col">
       <div className="stage-bg px-6 py-4 text-center">
         <h1 className="font-stage text-3xl font-black text-white">You&apos;re in, {me?.name}!</h1>
-        <p className="font-stage text-lg font-bold text-white/80">Waiting for the teacher to start. Warm up in the editor below: Run works, nothing is scored.</p>
+        <p className="font-stage text-lg font-bold text-white/80">Waiting for the host to start. Warm up in the editor below: Run works, nothing is scored.</p>
       </div>
       <div className="min-h-0 flex-1">{practice && <Workspace question={practice} token={token} scope={scope} practice />}</div>
     </div>

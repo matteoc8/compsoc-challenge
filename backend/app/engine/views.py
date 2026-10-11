@@ -12,6 +12,7 @@ from ..models import (
     Answer,
     Game,
     GameState,
+    HintGiven,
     Question,
     QuestionType,
     RunLog,
@@ -27,6 +28,32 @@ from .scoring import closest_points
 from .serialize import TYPE_LABEL, rule_line, serialize_question
 
 QUESTION_STATES = {GameState.open, GameState.paused, GameState.closed, GameState.judging, GameState.results}
+FREE_RUN = "free_run"
+FREE_RUN_STATES = {GameState.open, GameState.paused, GameState.closed, GameState.judging}
+
+
+def is_free_run(game: Game) -> bool:
+    return game.mode == FREE_RUN
+
+
+def free_run_breaks(game: Game, n: int) -> list[int]:
+    """Pause points: a break after question index b stops teams going past it until unlocked."""
+    return sorted({b for b in (game.settings or {}).get("breaks", []) if isinstance(b, int) and 0 <= b < n - 1})
+
+
+def free_run_closed(game: Game) -> set[str]:
+    """Problems the host closed after analysing them: still visible, no more submissions."""
+    return set((game.settings or {}).get("closed_questions", []))
+
+
+def free_run_visible(game: Game, n: int) -> int:
+    """How many questions (from the start) teams can open: up to the first break at or after
+    the point the host has unlocked to."""
+    through = int((game.settings or {}).get("unlocked_through", -1))
+    for b in free_run_breaks(game, n):
+        if b >= through:
+            return b + 1
+    return n
 
 
 def now() -> datetime:
@@ -65,6 +92,7 @@ async def current_question(s: AsyncSession, game: Game) -> Question | None:
 def game_header(game: Game, questions_count: int, q: Question | None, role: str) -> dict:
     h = {
         "id": str(game.id),
+        "mode": game.mode or "live",
         "state": game.state.value,
         "question_index": game.question_index,
         "question_count": questions_count,
@@ -73,6 +101,8 @@ def game_header(game: Game, questions_count: int, q: Question | None, role: str)
         "deadline": game.deadline.isoformat() if game.deadline else None,
         "paused": game.state == GameState.paused,
         "remaining_ms": remaining_ms(game),
+        "unlimited": bool(q and q.unlimited_time),
+        "elapsed_ms": elapsed_ms(game, now()),
         "ending": game.ending,
         "ended_early": game.ended_early,
         "phase_ends_at": game.phase_ends_at.isoformat() if game.phase_ends_at else None,
@@ -81,6 +111,8 @@ def game_header(game: Game, questions_count: int, q: Question | None, role: str)
     }
     if role in ("teacher", "screen"):
         h["join_code"] = game.join_code
+    if is_free_run(game):
+        h["duration_s"] = int((game.settings or {}).get("duration_s", 3600))
     return h
 
 
@@ -99,6 +131,7 @@ def submission_result(sub: Submission) -> dict:
     """What a team sees about its own submission. Never test data."""
     return {
         "id": sub.id,
+        "question_id": str(sub.question_id),
         "attempt": sub.attempt_no,
         "status": sub.status.value,
         "passed": sub.tests_passed,
@@ -175,7 +208,29 @@ async def progress(s: AsyncSession, game: Game, q: Question) -> dict:
     return out
 
 
+async def hints_by_team(s: AsyncSession, game_id, question_id) -> dict[str, list[int]]:
+    out: dict[str, list[int]] = {}
+    rows = (
+        await s.execute(
+            select(HintGiven.team_id, HintGiven.hint_index)
+            .where(HintGiven.game_id == game_id, HintGiven.question_id == question_id)
+            .order_by(HintGiven.hint_index)
+        )
+    ).all()
+    for tid, idx in rows:
+        out.setdefault(str(tid), []).append(idx)
+    return out
+
+
 async def monitor_rows(s: AsyncSession, game: Game, q: Question) -> list[dict]:
+    rows = await _monitor_rows(s, game, q)
+    hints = await hints_by_team(s, game.id, q.id)
+    for r in rows:
+        r["hints"] = hints.get(r["team_id"], [])
+    return rows
+
+
+async def _monitor_rows(s: AsyncSession, game: Game, q: Question) -> list[dict]:
     teams = (await s.scalars(select(Team).where(Team.game_id == game.id).order_by(Team.joined_at))).all()
     if q.type == QuestionType.multiple_choice:
         online = rt.hub.online_team_ids(str(game.id))
@@ -283,12 +338,138 @@ async def adjustments(s: AsyncSession, game_id) -> list[dict]:
     ]
 
 
+def _cell(q: Question, subs: list[Submission], answer: Answer | None, points: int | None) -> dict:
+    """One team on one problem: solved / partial / tried / judging, or correct / wrong."""
+    if q.type == QuestionType.multiple_choice:
+        status = None if answer is None else ("correct" if answer.correct else "wrong")
+        return {"status": status, "points": points, "attempts": 1 if answer else 0}
+    judged = [x for x in subs if x.status == SubStatus.judged and x.tests_total]
+    if any(x.tests_passed == x.tests_total for x in judged):
+        status = "solved"
+    elif any(x.tests_passed for x in judged):
+        status = "partial"
+    elif any(x.status in (SubStatus.queued, SubStatus.running) for x in subs):
+        status = "judging"
+    elif subs:
+        status = "tried"
+    else:
+        status = None
+    best = max(judged, key=lambda x: x.tests_passed or 0, default=None)
+    return {
+        "status": status,
+        "points": points,
+        "attempts": len(subs),
+        "passed": best.tests_passed if best else None,
+        "total": best.tests_total if best else None,
+    }
+
+
+async def _free_run(s: AsyncSession, game: Game, role: str, team_id: str | None, board: list[dict]) -> dict:
+    questions = await quiz_questions(s, game.quiz_id)
+    n = len(questions)
+    visible = free_run_visible(game, n)
+    breaks = free_run_breaks(game, n)
+    out: dict = {"visible": visible, "total": n, "breaks": breaks}
+    closed = free_run_closed(game)
+    section = 0
+    info = []
+    for i, q in enumerate(questions):
+        locked = i >= visible
+        row = {
+            "id": str(q.id),
+            "index": i,
+            "type": q.type.value,
+            "type_label": TYPE_LABEL[q.type],
+            "section": section,
+            "locked": locked,
+            "closed": str(q.id) in closed,
+        }
+        if role == "teacher" or not locked:
+            row["title"] = q.title
+        if role == "teacher":
+            row["hints"] = list((q.config or {}).get("hints") or [])
+        info.append(row)
+        if i in breaks:
+            section += 1
+    out["questions"] = info
+    analysing = (game.settings or {}).get("analysing")
+    if analysing and game.state in FREE_RUN_STATES:
+        show = (game.settings or {}).get("analysis_show") or "results"
+        res = dict((game.results or {}).get(analysing) or {})
+        res.pop("bench", None)
+        # code only reaches the screens while the host is showing it
+        if show != "winner":
+            res.pop("winner", None)
+        if show != "solution":
+            res.pop("model_solution", None)
+        if show != "team":
+            res.pop("team_solution", None)
+        q = next((x for x in questions if str(x.id) == analysing), None)
+        out["analysis"] = {
+            "question_id": analysing,
+            "title": q.title if q else "",
+            "description_md": q.description_md if q else "",
+            "show": show,
+            "results": res,
+        }
+    if game.state not in FREE_RUN_STATES and game.state not in (GameState.leaderboard, GameState.podium, GameState.finished):
+        return out
+
+    subs = (await s.scalars(select(Submission).where(Submission.game_id == game.id).order_by(Submission.id))).all()
+    answers = {(a.question_id, a.team_id): a for a in (await s.scalars(select(Answer).where(Answer.game_id == game.id))).all()}
+    pts = {
+        (qid, tid): p
+        for qid, tid, p in (
+            await s.execute(
+                select(ScoreEvent.question_id, ScoreEvent.team_id, ScoreEvent.points).where(
+                    ScoreEvent.game_id == game.id, ScoreEvent.reason == "question"
+                )
+            )
+        ).all()
+    }
+    by: dict[tuple, list[Submission]] = {}
+    for x in subs:
+        by.setdefault((x.question_id, x.team_id), []).append(x)
+
+    def cells(tid: uuid.UUID) -> dict:
+        return {str(q.id): _cell(q, by.get((q.id, tid), []), answers.get((q.id, tid)), pts.get((q.id, tid))) for q in questions}
+
+    if role in ("teacher", "screen"):
+        out["grid"] = [{**r, "cells": cells(uuid.UUID(r["team_id"]))} for r in board]
+    if role == "teacher":
+        out["in_flight"] = sum(1 for x in subs if x.status in (SubStatus.queued, SubStatus.running))
+    if role == "team" and team_id and game.state in FREE_RUN_STATES:
+        tid = uuid.UUID(team_id)
+        out["problems"] = [serialize_question(q, "team") for q in questions[:visible]]
+        out["status"] = cells(tid)
+        out["submissions"] = {
+            str(q.id): [submission_result(x) for x in sorted(by.get((q.id, tid), []), key=lambda x: x.attempt_no)] for q in questions[:visible]
+        }
+        out["answers"] = {str(q.id): answers[(q.id, tid)].choice for q in questions[:visible] if (q.id, tid) in answers}
+        given = (
+            await s.execute(
+                select(HintGiven.question_id, HintGiven.hint_index)
+                .where(HintGiven.game_id == game.id, HintGiven.team_id == tid)
+                .order_by(HintGiven.hint_index)
+            )
+        ).all()
+        texts = {q.id: (q.config or {}).get("hints") or [] for q in questions}
+        hints: dict[str, list] = {}
+        for qid, i in given:
+            if i < len(texts.get(qid, [])):
+                hints.setdefault(str(qid), []).append({"index": i, "number": i + 1, "text": texts[qid][i]})
+        out["hints"] = hints
+    return out
+
+
 async def build_snapshot(s: AsyncSession, game: Game, role: str, team_id: str | None = None) -> dict:
     questions = await quiz_questions(s, game.quiz_id)
     q = await current_question(s, game)
     snap: dict = {"role": role, "game": game_header(game, len(questions), q, role)}
     board = await team_totals(s, game.id)
     snap["leaderboard"] = with_previous(board, game.last_board)
+    if is_free_run(game):
+        snap["free_run"] = await _free_run(s, game, role, team_id, board)
 
     if q and game.state == GameState.round_intro:
         snap["intro"] = {
@@ -349,6 +530,12 @@ async def build_snapshot(s: AsyncSession, game: Game, role: str, team_id: str | 
                 )
                 snap["my_answer"] = {"choice": mine.choice} if mine else None
             snap["my_submissions"] = await team_submission_rows(s, game.id, q.id, uuid.UUID(team_id))
+            texts = (q.config or {}).get("hints") or []
+            snap["my_hints"] = [
+                {"index": i, "number": i + 1, "text": texts[i]}
+                for i in (await hints_by_team(s, game.id, q.id)).get(team_id, [])
+                if i < len(texts)
+            ]
             pts = (await question_points(s, game.id, q.id)).get(team_id)
             snap["my_question_points"] = pts
     return snap

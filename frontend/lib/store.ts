@@ -81,6 +81,12 @@ export const useGame = create<GameStore>((set, get) => ({
       case "submission.result": {
         if (!snap) return;
         const sub = m.data as SubmissionResult;
+        const fr = snap.free_run;
+        if (fr?.submissions && sub.question_id) {
+          const subs = { ...fr.submissions, [sub.question_id]: upsertSubmission(fr.submissions[sub.question_id], sub) };
+          set({ snapshot: { ...snap, free_run: { ...fr, submissions: subs } } });
+          return;
+        }
         const pts = sub.provisional ? snap.my_question_points : Math.max(snap.my_question_points ?? 0, sub.points ?? 0) || snap.my_question_points;
         set({ snapshot: { ...snap, my_submissions: upsertSubmission(snap.my_submissions, sub), my_question_points: pts } });
         return;
@@ -124,6 +130,9 @@ export const useGame = create<GameStore>((set, get) => ({
         }
         return;
       }
+      case "hint":
+        if (snap?.role === "team") get().toast(`${snap.free_run && m.data.title ? `${m.data.title}: ` : ""}Hint ${m.data.number}: ${m.data.text}`, "info");
+        return;
       case "solve":
         set({ solveTick: get().solveTick + 1 });
         return;

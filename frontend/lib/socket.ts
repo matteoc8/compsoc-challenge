@@ -162,6 +162,18 @@ export function useGameSocket(params: Record<string, string> | null, generation 
   return sockRef;
 }
 
+/** Unlimited-time questions have no deadline until the host ends them: the clock counts up. */
+export function countsUp(game: { unlimited?: boolean; deadline: string | null }): boolean {
+  return !!game.unlimited && !game.deadline;
+}
+
+/** Elapsed ms since the question opened (pauses excluded), on the server's clock. */
+export function elapsedMs(game: { state: string; paused: boolean; elapsed_ms?: number | null; server_time: string }, offset: number): number | null {
+  if (game.elapsed_ms == null) return null;
+  if (game.paused || game.state !== "open") return game.elapsed_ms;
+  return Math.max(0, game.elapsed_ms + (Date.now() + offset - Date.parse(game.server_time)));
+}
+
 /** Remaining ms on the server's clock, for rendering a countdown. */
 export function remainingMs(game: { deadline: string | null; paused: boolean; remaining_ms: number | null }, offset: number): number | null {
   if (game.paused) return game.remaining_ms;

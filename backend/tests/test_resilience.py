@@ -31,7 +31,7 @@ def test_backend_restart_mid_question(tmp_path, monkeypatch):
         assert r.status_code == 200
     # "docker compose restart backend"
     with make_client(dbp, media, monkeypatch) as c:
-        c.post("/api/auth/login", json={"username": "teacher", "password": NEW_PW})
+        c.post("/api/auth/login", json={"username": "admin", "password": NEW_PW})
         after = db(c, lambda s: s.get(Game, uuid.UUID(gid)))
         assert after.state.value == "open" and after.deadline == before.deadline
         # the device token still works and the draft survived

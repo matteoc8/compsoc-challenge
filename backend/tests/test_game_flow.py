@@ -191,7 +191,8 @@ def test_full_game(client):
     submit(c, gamma["token"], q2, "print('#')")
     judged(c, gid, alpha["team_id"], 3)
     judged(c, gid, delta["team_id"], 2)
-    judged(c, gid, gamma["team_id"], 2)
+    g_sub = judged(c, gid, gamma["team_id"], 2)[1]
+    assert 0 < g_sub[1] < g_sub[2]  # Gamma passes only some tests
     assert question_points(c, gid, q2) == {}  # golf is scored at close
     c.post(f"/api/games/{gid}/end-now")
     wait_state(c, gid, "results", 15)
@@ -199,7 +200,8 @@ def test_full_game(client):
     long_len, short_len = len(STAIRS_LONG.rstrip()), len(STAIRS_SHORT)
     assert pts[delta["team_id"]] == 4000
     assert pts[alpha["team_id"]] == round(4000 * (0.5 + 0.5 * short_len / long_len))
-    assert gamma["team_id"] not in pts
+    # partial credit: up to half the lowest full-pass score (2000), banded by tests passed
+    assert pts[gamma["team_id"]] == round(1000 * g_sub[1] / g_sub[2])
     res = db(c, lambda s: s.get(Game, uuid.UUID(gid))).results[q2]
     assert res["top3"][0]["name"] == "Delta" and res["top3"][0]["code"] == STAIRS_SHORT and len(res["top3"]) == 2
 
@@ -249,7 +251,9 @@ def test_full_game(client):
         totals = {r["name"]: r["points"] for r in podium}
         expected_alpha = sum(question_points(c, gid, q).get(alpha["team_id"], 0) for q in (qm, q1, q2, q3))
         assert totals["Alpha"] == expected_alpha
-        assert totals["Gamma"] == question_points(c, gid, qm)[gamma["team_id"]]  # only its quiz answer
+        # its quiz answer plus partial credit on the coding rounds it didn't fully solve
+        expected_gamma = sum(question_points(c, gid, q).get(gamma["team_id"], 0) for q in (qm, q1, q2, q3))
+        assert totals["Gamma"] == expected_gamma > question_points(c, gid, qm)[gamma["team_id"]]
         assert podium[0]["rank"] == 1 and "Sussex" not in totals
     c.post(f"/api/games/{gid}/next", json={"expect_state": "podium"})
     assert state(c, gid) == "finished"
@@ -265,7 +269,8 @@ def test_full_game(client):
 
 def test_super_fast_first_three_then_ends(client):
     """Only the first three full solves score (by when they were sent), and the round ends
-    as soon as the third team gets it; a fourth solve during the 3 s countdown scores 0."""
+    as soon as the third team gets it. A fourth solve during the 3 s countdown and a partial
+    solve only get partial credit, at close, below every placed team."""
     c = client
     login_teacher(c)
     quiz = make_quiz(c, "super_fast")
@@ -276,12 +281,12 @@ def test_super_fast_first_three_then_ends(client):
     c.post(f"/api/games/{gid}/start", json={})
     c.post(f"/api/games/{gid}/next", json={"expect_state": "round_intro"})
     rule = quiz["questions"][0]["scoring"]
-    assert rule == {"mode": "ranked", "points": [4000, 3000, 2000]}
+    assert rule == {"mode": "ranked", "points": [4000, 3000, 2000], "partial_credit": 0.5}
     with c.websocket_connect(f"/ws?role=team&token={teams[0]['token']}") as ws:
         intro = ws.receive_json()["data"]["question"]["rule_line"]
     assert "first 3 teams" in intro and "3rd team" in intro
 
-    submit(c, teams[4]["token"], qid, VOWELS_LOWER_ONLY)  # partial: never scores now
+    submit(c, teams[4]["token"], qid, VOWELS_LOWER_ONLY)  # partial: scores nothing while open
     for i, t in enumerate(teams[:3]):
         submit(c, t["token"], qid, VOWELS_OK)
         judged(c, gid, t["team_id"], 1)
@@ -292,7 +297,14 @@ def test_super_fast_first_three_then_ends(client):
     submit(c, teams[3]["token"], qid, VOWELS_OK)
     judged(c, gid, teams[3]["team_id"], 1)
     wait_state(c, gid, "results", 15)
-    assert question_points(c, gid, qid) == {teams[0]["team_id"]: 4000, teams[1]["team_id"]: 3000, teams[2]["team_id"]: 2000}
+    # partial credit cap = 0.5 × 2000: the unplaced full solve tops the 10/10 band, 6/10 gets 6/10 of it
+    assert question_points(c, gid, qid) == {
+        teams[0]["team_id"]: 4000,
+        teams[1]["team_id"]: 3000,
+        teams[2]["team_id"]: 2000,
+        teams[3]["team_id"]: 1000,
+        teams[4]["team_id"]: 600,
+    }
     res = db(c, lambda s: s.get(Game, uuid.UUID(gid))).results[qid]
     assert [s["name"] for s in res["solves"]][:3] == ["One", "Two", "Three"]
 

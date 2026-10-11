@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 
 SUBMIT = 0
 RUN = 1
+WEEKLY = 2  # problem of the week: never ahead of a live game
 
 
 class JudgeQueue:
@@ -30,6 +31,23 @@ class JudgeQueue:
 
     def put(self, priority: int, job: Callable[[], Awaitable[None]]) -> None:
         self.q.put_nowait((priority, next(self._counter), job))
+
+    async def call(self, priority: int, job: Callable[[], Awaitable]):
+        """Queue a job and wait for its result (for REST endpoints with no WebSocket)."""
+        fut = asyncio.get_running_loop().create_future()
+
+        async def wrapped() -> None:
+            try:
+                result = await job()
+            except Exception as e:
+                if not fut.done():
+                    fut.set_exception(e)
+                return
+            if not fut.done():
+                fut.set_result(result)
+
+        self.put(priority, wrapped)
+        return await fut
 
     def pending(self) -> int:
         return self.q.qsize()

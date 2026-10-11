@@ -22,6 +22,20 @@ def _ordinal(n: int) -> str:
 
 def rule_line(q: Question) -> str:
     """The one-line rules shown on the round intro card and in the problem pane."""
+    line = _rule_line(q)
+    scoring = q.scoring or {}
+    if (
+        q.type != QuestionType.multiple_choice
+        and scoring.get("mode") in ("closest", "flat", "ranked")
+        and scoring.get("partial_credit", 0.5) > 0
+    ):
+        line += " Passing only some tests still earns partial credit."
+    if q.unlimited_time:
+        line += " No time limit: the host ends it."
+    return line
+
+
+def _rule_line(q: Question) -> str:
     scoring = q.scoring or {}
     if q.type == QuestionType.multiple_choice:
         return "Answer fast: quicker correct answers score more"
@@ -31,7 +45,7 @@ def rule_line(q: Question) -> str:
             places = " · ".join(f"{_ordinal(i + 1)} {p:,}" for i, p in enumerate(pts))
             n = len(pts)
             return (
-                f"Only the first {n} team{'s' if n != 1 else ''} to pass every test score ({places}). "
+                f"Only the first {n} team{'s' if n != 1 else ''} to pass every test score full points ({places}). "
                 f"The round ends as soon as the {_ordinal(n)} team gets it."
             )
         if scoring.get("mode") == "flat":
@@ -62,8 +76,11 @@ def serialize_question(q: Question, role: str) -> dict:
         "image_url": media_url(q.image_media_id),
         "image_alt": q.image_alt,
         "time_limit_s": q.time_limit_s,
+        "unlimited_time": bool(q.unlimited_time),
         "scoring_max": _scoring_max(q.scoring),
     }
+    if role == "teacher":
+        public["hints"] = list(cfg.get("hints") or [])  # console only; teams get them one by one
     if q.type == QuestionType.multiple_choice:
         public["options"] = [{"index": i, "text": o.get("text", "")} for i, o in enumerate(cfg.get("options", []))]
         if role == "teacher":
@@ -96,7 +113,7 @@ def _scoring_max(scoring: dict) -> int:
 
 
 def _public_scoring(scoring: dict) -> dict:
-    allowed = {"mode", "max", "speed_floor", "correctness_floor", "min_pass", "min_share", "points"}
+    allowed = {"mode", "max", "speed_floor", "correctness_floor", "min_pass", "min_share", "points", "partial_credit"}
     return {k: v for k, v in scoring.items() if k in allowed}
 
 
@@ -117,6 +134,7 @@ def serialize_question_full(q: Question) -> dict:
         "reference_solution": q.reference_solution,
         "config": q.config,
         "time_limit_s": q.time_limit_s,
+        "unlimited_time": bool(q.unlimited_time),
         "auto_end": q.auto_end,
         "scoring": q.scoring,
         "verified_at": q.verified_at.isoformat() if q.verified_at else None,

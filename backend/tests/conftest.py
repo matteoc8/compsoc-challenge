@@ -46,6 +46,7 @@ def make_client(db_path, media_dir, monkeypatch) -> TestClient:
     monkeypatch.setenv("JUDGE_BACKEND", "local")
     monkeypatch.setenv("MEDIA_DIR", str(media_dir))
     monkeypatch.setenv("SECRET_KEY", "test-secret-test-secret-test-secret-123")
+    monkeypatch.setenv("SCHOOL_EMAIL_DOMAIN", "school.example")
     get_settings.cache_clear()
     from app.main import create_app
 
@@ -70,7 +71,7 @@ def wait_until(pred: Callable[[], object], timeout: float = 30, interval: float 
 
 
 def login_teacher(c: TestClient, password: str = "changeme") -> None:
-    r = c.post("/api/auth/login", json={"username": "teacher", "password": password})
+    r = c.post("/api/auth/login", json={"username": "admin", "password": password})
     assert r.status_code == 200, r.text
     if r.json()["must_change_password"]:
         r = c.post("/api/auth/change-password", json={"current_password": password, "new_password": NEW_PW})

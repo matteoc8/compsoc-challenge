@@ -166,7 +166,7 @@
       "round_name": "Round 1: Super Fast",
       "type": "super_fast",
       "title": "Vowel Counter",
-      "description_md": "Read **one line** of text and print how many vowels it contains.\n\nVowels are `a e i o u`, in upper or lower case. `y` is **not** a vowel.\n\n**First three win:** only the first three teams to pass *every* hidden test score (4,000 · 3,000 · 2,000 points). The round ends as soon as the third team gets it.",
+      "description_md": "Read **one line** of text and print how many vowels it contains.\n\nVowels are `a e i o u`, in upper or lower case. `y` is **not** a vowel.\n\n**First three win:** the first three teams to pass *every* hidden test score (4,000 · 3,000 · 2,000 points). The round ends as soon as the third team gets it. Everyone else gets partial credit for the tests they pass (up to 1,000).",
       "starter_code": "line = input()\n\n# Print the number of vowels in line\n",
       "reference_solution": "print(sum(c in 'aeiouAEIOU' for c in input()))\n",
       "config": {
@@ -240,7 +240,7 @@
       "round_name": "Round 2: Code Golf",
       "type": "code_golf",
       "title": "Staircase",
-      "description_md": "Read an integer `n` (1 ≤ n ≤ 30) and print a staircase of `#` that is `n` steps tall, **aligned to the right**: line `i` has `n - i` spaces followed by `i` hashes.\n\n**Shortest correct code wins.** Every hidden test must pass; your shortest passing submission counts, so keep shaving characters until the buzzer.",
+      "description_md": "Read an integer `n` (1 ≤ n ≤ 30) and print a staircase of `#` that is `n` steps tall, **aligned to the right**: line `i` has `n - i` spaces followed by `i` hashes.\n\n**Shortest correct code wins.** Pass every hidden test to score fully; your shortest passing submission counts, so keep shaving characters until the buzzer. Passing only some tests still earns partial credit: more tests first, then fewer characters.",
       "starter_code": "n = int(input())\n",
       "reference_solution": "n = int(input())\nfor i in range(1, n + 1):\n    print(' ' * (n - i) + '#' * i)\n",
       "config": {
@@ -311,7 +311,7 @@
       "round_name": "Round 3: Best Time Complexity",
       "type": "best_complexity",
       "title": "Pair Sum",
-      "description_md": "Write `solve(nums, k)` that returns how many pairs of positions `i < j` have `nums[i] + nums[j] == k`.\n\nYou only write the function: we read the input and print your answer.\n\n**Fastest correct code on big inputs wins.** Once time is up, every correct solution is run on inputs of 500, 2,000 and 8,000 numbers, and ranked by its time on the largest. Your latest passing submission is the one measured.",
+      "description_md": "Write `solve(nums, k)` that returns how many pairs of positions `i < j` have `nums[i] + nums[j] == k`.\n\nYou only write the function: we read the input and print your answer.\n\n**Fastest correct code on big inputs wins.** Once time is up, every correct solution is run on inputs of 500, 2,000 and 8,000 numbers, and ranked by its time on the largest. Your latest passing submission is the one measured. Solutions that pass only some tests get partial credit: more tests first, then faster on the tests.",
       "starter_code": "from typing import List\n\n\ndef solve(nums: List[int], k: int) -> int:\n    # Return how many pairs i < j have nums[i] + nums[j] == k\n    count = 0\n    return count\n",
       "reference_solution": "from typing import List\n\n\ndef solve(nums: List[int], k: int) -> int:\n    seen = {}\n    count = 0\n    for x in nums:\n        count += seen.get(k - x, 0)\n        seen[x] = seen.get(x, 0) + 1\n    return count\n",
       "config": {

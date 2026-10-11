@@ -2,6 +2,7 @@
 import { InlineCountdown } from "@/components/stage/Countdown";
 import { Markdown } from "@/components/ui/Markdown";
 import { fmtPoints, TYPE_ACCENT } from "@/lib/format";
+import { useGame } from "@/lib/store";
 import type { PublicQuestion } from "@/lib/types";
 
 export function ProblemPane({
@@ -18,16 +19,17 @@ export function ProblemPane({
   practice?: boolean;
 }) {
   const accent = q.type ? TYPE_ACCENT[q.type] : "#F6B73C";
+  const freeRun = useGame((s) => s.snapshot?.game.mode === "free_run"); // one clock in the header, no rounds
   return (
     <div className="flex h-full flex-col overflow-hidden bg-ink-800">
       <div className="flex items-center justify-between gap-3 border-b border-ink-600 px-4 py-2.5" style={{ borderTop: `4px solid ${accent}` }}>
         <div className="min-w-0">
           <div className="truncate font-stage text-xs font-extrabold uppercase tracking-wider" style={{ color: accent }}>
-            {q.round_name}
+            {freeRun ? q.type_label : q.round_name}
           </div>
           <h1 className="truncate text-lg font-bold text-white">{q.title}</h1>
         </div>
-        {!practice && <InlineCountdown />}
+        {!practice && !freeRun && <InlineCountdown />}
       </div>
       {!practice && (
         <div className="grid grid-cols-2 gap-px border-b border-ink-600 bg-ink-600 text-center text-xs">
@@ -38,7 +40,7 @@ export function ProblemPane({
             </div>
           </div>
           <div className="bg-ink-800 px-2 py-1.5">
-            <div className="text-ink-400">{q.type === "super_fast" ? "Your score" : "Score (at close)"}</div>
+            <div className="text-ink-400">{q.type === "super_fast" ? "Your score" : freeRun ? "Score so far" : "Score (at close)"}</div>
             <div className="font-mono font-bold text-white">{fmtPoints(points ?? (q.type === "super_fast" ? 0 : null))}</div>
           </div>
         </div>

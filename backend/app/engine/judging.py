@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -108,19 +109,18 @@ async def submit(team: Team, question_id: str, code: str) -> dict:
         async with session_scope() as s:
             game = await s.get(Game, team.game_id, with_for_update=True)
             t = now()
-            if str(game.current_question_id) != question_id:
-                raise GameError("That question isn't open", 409)
-            q = await s.get(Question, game.current_question_id)
+            q = await engine.open_question(s, game, question_id)
             if q.type == QuestionType.multiple_choice:
                 raise GameError("That isn't a coding question", 409)
+            engine.check_not_closed(game, q)
             if game.state == GameState.paused:
                 raise GameError("The game is paused, submit when it resumes", 409)
-            if game.state != GameState.open or t > game.deadline + timedelta(milliseconds=GRACE_MS):
+            if game.state != GameState.open or (game.deadline and t > game.deadline + timedelta(milliseconds=GRACE_MS)):
                 raise GameError("Time's up for this question", 409)
             mine = (
                 await s.scalars(
                     select(Submission)
-                    .where(Submission.game_id == game.id, Submission.question_id == game.current_question_id, Submission.team_id == team.id)
+                    .where(Submission.game_id == game.id, Submission.question_id == q.id, Submission.team_id == team.id)
                     .order_by(Submission.attempt_no.desc())
                 )
             ).all()
@@ -151,6 +151,50 @@ async def submit(team: Team, question_id: str, code: str) -> dict:
     return {"submission_id": sub_id, "attempt": attempt, "attempts_left": SUBMIT_MAX - attempt}
 
 
+@dataclass
+class TestRun:
+    passed: int
+    total: int
+    first_failed: int | None
+    verdict: str
+    error_summary: str | None
+    exec_time_ms: int | None
+    memory_kb: int | None
+    tests: list[dict]  # per test, for the teacher only: never sent to teams
+
+
+async def run_tests(code: str, cfg: QuestionConfig, game_id: str | None = None) -> TestRun:
+    """Run code against every hidden test. Raises JudgeUnavailable if the judge stays down."""
+    reqs = [ExecRequest(source=program(code, cfg), stdin=t.stdin, **exec_limits(cfg)) for t in cfg.tests]
+    results = await run_with_retry(reqs, game_id) if reqs else []
+    passed, first_failed, verdict, err, tests = 0, None, "Accepted", None, []
+    for i, (test, r) in enumerate(zip(cfg.tests, results), start=1):
+        ok = r.status_id == ACCEPTED and outputs_match(r.stdout, test.expected)
+        tests.append(
+            {"passed": ok, "status": "Accepted" if ok else ("Wrong Answer" if r.status_id == ACCEPTED else status_text(r.status_id)),
+             "time_ms": r.time_ms, "stdout": r.stdout[:2000], "stderr": r.stderr[-1000:]}
+        )
+        if ok:
+            passed += 1
+        elif first_failed is None:
+            first_failed = i
+            verdict = tests[-1]["status"]
+            if r.status_id != ACCEPTED:
+                err = summarise_error(r.stderr) or None
+    times = [r.time_ms for r in results if r.time_ms is not None]
+    mems = [r.memory_kb for r in results if r.memory_kb is not None]
+    return TestRun(
+        passed=passed,
+        total=len(cfg.tests),
+        first_failed=first_failed,
+        verdict=verdict if passed < len(cfg.tests) else "Accepted",
+        error_summary=err,
+        exec_time_ms=max(times) if times else None,
+        memory_kb=max(mems) if mems else None,
+        tests=tests,
+    )
+
+
 async def judge_submission(sub_id: int) -> None:
     async with session_scope() as s:
         sub = await s.get(Submission, sub_id)
@@ -160,9 +204,8 @@ async def judge_submission(sub_id: int) -> None:
         q = await s.get(Question, sub.question_id)
         cfg = QuestionConfig(**q.config)
         code, gid, team_id, qid = sub.code, str(sub.game_id), str(sub.team_id), q.id
-    reqs = [ExecRequest(source=program(code, cfg), stdin=t.stdin, **exec_limits(cfg)) for t in cfg.tests]
     try:
-        results = await run_with_retry(reqs, gid) if reqs else []
+        out = await run_tests(code, cfg, gid)
     except JudgeUnavailable:
         async with session_scope() as s:
             sub = await s.get(Submission, sub_id)
@@ -174,18 +217,7 @@ async def judge_submission(sub_id: int) -> None:
         await engine.push_live(gid, qid)
         return
 
-    passed, first_failed, verdict, err = 0, None, "Accepted", None
-    for i, (test, r) in enumerate(zip(cfg.tests, results), start=1):
-        ok = r.status_id == ACCEPTED and outputs_match(r.stdout, test.expected)
-        if ok:
-            passed += 1
-        elif first_failed is None:
-            first_failed = i
-            verdict = "Wrong Answer" if r.status_id == ACCEPTED else status_text(r.status_id)
-            if r.status_id != ACCEPTED:
-                err = summarise_error(r.stderr) or None
-    times = [r.time_ms for r in results if r.time_ms is not None]
-    mems = [r.memory_kb for r in results if r.memory_kb is not None]
+    passed = out.passed
 
     async with engine.lock(gid):
         async with session_scope() as s:
@@ -193,15 +225,20 @@ async def judge_submission(sub_id: int) -> None:
             game = await s.get(Game, sub.game_id)
             q = await s.get(Question, sub.question_id)
             sub.status = SubStatus.judged
-            sub.tests_passed, sub.tests_total = passed, len(cfg.tests)
-            sub.verdict = verdict if passed < len(cfg.tests) else "Accepted"
-            sub.first_failed = first_failed
-            sub.error_summary = err
-            sub.exec_time_ms = max(times) if times else None
-            sub.memory_kb = max(mems) if mems else None
+            sub.tests_passed, sub.tests_total = out.passed, out.total
+            sub.verdict = out.verdict
+            sub.first_failed = out.first_failed
+            sub.error_summary = out.error_summary
+            sub.exec_time_ms = out.exec_time_ms
+            sub.memory_kb = out.memory_kb
+            sub.test_results = out.tests
             sub.judged_at = now()
             sub.provisional_points = await engine.score_submission(s, game, q, sub)
-            if sub.provisional_points is None and q.type == QuestionType.code_golf and passed == len(cfg.tests):
+            if views.is_free_run(game):
+                await engine.free_run_rescore(s, game, q)
+                await s.flush()
+                sub.provisional_points = (await views.question_points(s, game.id, q.id)).get(team_id)
+            elif sub.provisional_points is None and q.type == QuestionType.code_golf and passed == len(cfg.tests):
                 rows = await views.monitor_rows(s, game, q)
                 mine = next((r for r in rows if r["team_id"] == team_id), None)
                 sub.provisional_points = mine["provisional_points"] if mine else None
@@ -241,9 +278,9 @@ async def run(team: Team, question_id: str, code: str, stdin: str | None) -> dic
             cfg = QuestionConfig(examples=PRACTICE["examples"])
             qid = None
         else:
-            if str(game.current_question_id) != question_id or game.state not in (GameState.open, GameState.paused):
+            if game.state not in (GameState.open, GameState.paused):
                 raise GameError("That question isn't open", 409)
-            q = await s.get(Question, game.current_question_id)
+            q = await engine.open_question(s, game, question_id)
             if q.type == QuestionType.multiple_choice:
                 raise GameError("That isn't a coding question", 409)
             cfg = QuestionConfig(**q.config)
@@ -401,6 +438,30 @@ async def partial_bench(gid: str, qid) -> dict:
     return result
 
 
+async def measure_entry(bench_cfg, code: str, baseline, ref) -> dict:
+    """Benchmark one passing solution against the baseline and the reference's answers."""
+    try:
+        r = await measure(rt.executor, bench_cfg, code, baseline.times_ms)
+    except JudgeUnavailable:
+        return {"score_ms": None, "class_label": "not measured (judge down)"}
+    wrong_at = next((n for n, h in r.hashes.items() if ref.hashes.get(n) and h != ref.hashes[n]), None)
+    completed = r.timed_out_at is None and r.error is None and wrong_at is None
+    top = r.top_time
+    return {
+        "times_ms": {str(n): round(v, 1) for n, v in r.times_ms.items()},
+        "top_ms": round(top, 1) if top is not None and completed else None,
+        "timed_out_at": r.timed_out_at,
+        "wrong_at": wrong_at,
+        "error": r.error,
+        "score_ms": max(top, float(bench_cfg.floor_ms)) if completed and top is not None else None,
+        "class_label": (
+            "wrong answer on a large input"
+            if wrong_at
+            else ("error on a large input" if r.error else estimate_class(r.times_ms, r.timed_out_at, bench_cfg.floor_ms, bench_cfg.cpu_limit_s * 1000))
+        ),
+    }
+
+
 async def benchmark_question(gid: str, qid) -> dict:
     """Benchmark each team's latest passing submission, one at a time."""
     async with session_scope() as s:
@@ -424,30 +485,7 @@ async def benchmark_question(gid: str, qid) -> dict:
         return result
     done = 0
     for tid, sub in sorted(latest.items(), key=lambda kv: kv[1].elapsed_ms):
-        try:
-            r = await measure(rt.executor, bench_cfg, sub.code, baseline.times_ms)
-        except JudgeUnavailable:
-            r = None
-        info = {"submission_id": sub.id, "elapsed_ms": sub.elapsed_ms}
-        if r is None:
-            info.update(score_ms=None, class_label="not measured (judge down)")
-        else:
-            wrong_at = next((n for n, h in r.hashes.items() if ref.hashes.get(n) and h != ref.hashes[n]), None)
-            completed = r.timed_out_at is None and r.error is None and wrong_at is None
-            top = r.top_time
-            info.update(
-                times_ms={str(n): round(v, 1) for n, v in r.times_ms.items()},
-                top_ms=round(top, 1) if top is not None and completed else None,
-                timed_out_at=r.timed_out_at,
-                wrong_at=wrong_at,
-                error=r.error,
-                score_ms=max(top, float(bench_cfg.floor_ms)) if completed and top is not None else None,
-                class_label=(
-                    "wrong answer on a large input"
-                    if wrong_at
-                    else ("error on a large input" if r.error else estimate_class(r.times_ms, r.timed_out_at, bench_cfg.floor_ms, bench_cfg.cpu_limit_s * 1000))
-                ),
-            )
+        info = {"submission_id": sub.id, "elapsed_ms": sub.elapsed_ms, **await measure_entry(bench_cfg, sub.code, baseline, ref)}
         result["teams"][tid] = info
         async with session_scope() as s:
             sub_row = await s.get(Submission, sub.id)

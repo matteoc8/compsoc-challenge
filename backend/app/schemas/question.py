@@ -47,6 +47,8 @@ class QuestionConfig(Strict):
     # Multiple choice only: up to four answers and the indexes of the correct one(s).
     options: list["Option"] = Field(default_factory=list, max_length=4)
     correct: list[int] = Field(default_factory=list, max_length=4)
+    # Hints the teacher can send to a team during the question (never sent until then).
+    hints: list[Annotated[str, Field(max_length=1000)]] = Field(default_factory=list, max_length=10)
 
 
 class Timed(Strict):
@@ -68,11 +70,19 @@ class Closest(Strict):
     mode: Literal["closest"] = "closest"
     max: int = Field(default=4000, ge=0, le=100_000)
     min_share: float = Field(default=0.5, ge=0, le=1)
+    # Partial credit: a team that passes some but not all tests can earn up to this share of
+    # the lowest score a full pass can get, so it always scores less than any full pass.
+    # More tests passed always beats fewer; ties use the round's own rule. 0 turns it off.
+    partial_credit: float = Field(default=0.5, ge=0, lt=1)
 
 
 class Flat(Strict):
     mode: Literal["flat"] = "flat"
     max: int = Field(default=4000, ge=0, le=100_000)
+    # Partial credit: a team that passes some but not all tests can earn up to this share of
+    # the lowest score a full pass can get, so it always scores less than any full pass.
+    # More tests passed always beats fewer; ties use the round's own rule. 0 turns it off.
+    partial_credit: float = Field(default=0.5, ge=0, lt=1)
 
 
 class Ranked(Strict):
@@ -81,6 +91,10 @@ class Ranked(Strict):
 
     mode: Literal["ranked"] = "ranked"
     points: list[int] = Field(default=[4000, 3000, 2000], min_length=1, max_length=50)
+    # Partial credit: a team that passes some but not all tests can earn up to this share of
+    # the lowest score a full pass can get, so it always scores less than any full pass.
+    # More tests passed always beats fewer; ties use the round's own rule. 0 turns it off.
+    partial_credit: float = Field(default=0.5, ge=0, lt=1)
 
     @property
     def max(self) -> int:
@@ -138,6 +152,9 @@ class QuestionIn(Strict):
     reference_solution: str = Field(default="", max_length=10_000)
     config: QuestionConfig = Field(default_factory=QuestionConfig)
     time_limit_s: int = Field(default=240, ge=5, le=900)
+    # No countdown: the question stays open until the teacher ends it. time_limit_s is then
+    # only the reference time for speed-based scoring.
+    unlimited_time: bool = False
     auto_end: AutoEnd = Field(default_factory=AutoEnd)
     scoring: Scoring | None = None
     # Optimistic concurrency for autosave: the updated_at the editor last saw.

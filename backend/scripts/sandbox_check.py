@@ -44,7 +44,7 @@ def ws_url(base: str, **params) -> str:
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:8080")
-    ap.add_argument("--username", default="teacher")
+    ap.add_argument("--username", default="admin")
     ap.add_argument("--password", required=True)
     args = ap.parse_args()
 
