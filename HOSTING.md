@@ -134,7 +134,7 @@ move to the 4 GB plan for good can you raise both to 4.
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.judge0.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.judge0.yml ps     # everything "running" / "healthy"
-curl -s http://localhost/api/health      # {"ok":true,"judge":true,...}
+curl -s https://compsoc.yourdomain.org/api/health   # {"ok":true,"judge":true,...} (http://localhost/... with no domain)
 ```
 
 The first build takes 5–10 minutes. Judge0 can take another minute before `"judge": true`.

@@ -36,7 +36,9 @@ docker image prune -f > /dev/null  # old images fill the disk otherwise
 
 echo "== 4/4 Waiting for the site to come back"
 for i in $(seq 1 60); do
-  health=$(curl -fsS http://localhost/api/health 2>/dev/null || true)
+  # Ask the backend from inside its container: Caddy only answers for SITE_ADDRESS, so
+  # http://localhost doesn't reach it once the site has a domain.
+  health=$($C exec -T backend python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).read().decode())" 2>/dev/null || true)
   if echo "$health" | grep -q '"judge": *true'; then
     echo "   $health"
     echo "Done: $before -> $after. Backup: $backup"
