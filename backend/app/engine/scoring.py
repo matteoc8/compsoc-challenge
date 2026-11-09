@@ -132,3 +132,38 @@ def partial_points(rule: Closest | Flat | Ranked, entries: list[Partial]) -> dic
             share = PARTIAL_TIE_SHARE + (1 - PARTIAL_TIE_SHARE) * ratio
         out[e.team_id] = _round(width * (k - 1) + width * share)
     return out
+
+
+# ------------------------------------------------------------------ problem of the week
+
+
+def weekly_test_points(total_points: int, passed: int, total: int) -> int:
+    """The week's test points shared over its hidden tests: passing all of them gives total_points."""
+    if total <= 0 or passed <= 0:
+        return 0
+    return _round(total_points * min(passed, total) / total)
+
+
+def tie_groups(measures: dict[str, tuple | None], tie_share: float = 0.0) -> dict[str, int]:
+    """Place (0-based) for each measured key, lower measure is better. Measures are tuples; two
+    are tied when everything but the last item is equal and the last is within tie_share of
+    the group's leader: the fastest not yet placed starts a group, everyone up to
+    leader × (1 + tie_share) joins it, and the next one after that starts the next group.
+    Tied keys share the better place and the places they use are skipped (1, 1, 3).
+    tie_share 0 means exactly equal. None (not measured) gets no place."""
+    ranked = sorted((m, k) for k, m in measures.items() if m is not None)
+    out: dict[str, int] = {}
+    leader: tuple | None = None
+    place = 0
+    for i, (m, k) in enumerate(ranked):
+        same = leader is not None and m[:-1] == leader[:-1] and (m[-1] == leader[-1] or m[-1] <= leader[-1] * (1 + tie_share))
+        if not same:
+            leader, place = m, i
+        out[k] = place
+    return out
+
+
+def weekly_bonus(bonus: list[int], measures: dict[str, tuple | None], tie_share: float = 0.0) -> dict[str, int]:
+    """Bonus by place (see tie_groups): bonus[0] for 1st and so on. Unmeasured gets nothing."""
+    places = tie_groups(measures, tie_share)
+    return {k: (bonus[places[k]] if k in places and places[k] < len(bonus) else 0) for k in measures}

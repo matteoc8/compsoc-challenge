@@ -177,14 +177,17 @@ $C restart backend
 
 ## 10. Updating and backups
 
-**Update to the latest code:**
+**Update to the latest code.** On your computer, commit and `git push`. Then on the droplet:
 
 ```bash
-cd /opt/compsoc-challenge && git pull
-docker compose -f docker-compose.yml -f docker-compose.judge0.yml up -d --build
+cd /opt/compsoc-challenge && bash deploy.sh
 ```
 
-Database changes apply by themselves when the backend starts.
+`deploy.sh` backs up the database to `~/backups` (it keeps the last 20), pulls, rebuilds,
+and waits until `/api/health` says the site and the judge are up. It stops at the first problem
+and prints how to go back. Database changes apply by themselves when the backend starts, and
+submissions that were being judged are picked up again. The site is down for about a minute
+while the containers restart, so don't deploy during an event.
 
 **Back up the database** (quizzes, games, weekly entries and people):
 

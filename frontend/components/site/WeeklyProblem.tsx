@@ -26,6 +26,8 @@ export interface WeeklySummary {
   closes_at: string;
   phase: "upcoming" | "open" | "closed";
   credit: string | null;
+  test_points: number;
+  bonus_points: number[];
 }
 
 interface Standing {
@@ -34,16 +36,19 @@ interface Standing {
   passed: number | null;
   total: number | null;
   points: number;
+  test_points?: number;
+  bonus?: number;
   chars: number | null;
   class_label: string | null;
   time_ms: number | null;
+  tier?: number | null;
+  tiers?: number | null;
   floor_ms?: number | null;
   solved_after_ms: number | null;
 }
 
 interface Detail extends WeeklySummary {
   question: { title: string; description_md: string; examples: IOCase[]; starter_code: string; tests_total: number; image_url: string | null; image_alt: string | null };
-  rule: string;
   standings: Standing[];
   solution?: string;
   email_domain: string | null;
@@ -100,10 +105,24 @@ function save(key: string, value: unknown) {
   }
 }
 
-export function measureCell(type: WeeklySummary["type"], r: { chars: number | null; class_label: string | null; time_ms: number | null; floor_ms?: number | null; solved_after_ms?: number | null; passed: number | null; total: number | null }) {
+/** A Fastest Code time: "0.84 ms", "12.3 ms", "1,204 ms". */
+export function fmtSpeedMs(ms: number): string {
+  return ms < 10 ? `${ms.toFixed(2)} ms` : ms < 100 ? `${ms.toFixed(1)} ms` : `${Math.round(ms).toLocaleString("en-GB")} ms`;
+}
+
+export function measureCell(
+  type: WeeklySummary["type"],
+  r: { chars: number | null; class_label: string | null; time_ms: number | null; tier?: number | null; tiers?: number | null; floor_ms?: number | null; solved_after_ms?: number | null; passed: number | null; total: number | null },
+) {
   const full = r.total != null && r.passed === r.total;
   if (type === "code_golf") return r.chars != null ? `${r.chars} chars` : "–";
-  if (type === "best_complexity") return !full ? "–" : r.time_ms != null ? fmtBenchMs(r.time_ms, r.floor_ms ?? 0) : (r.class_label ?? "measuring…");
+  if (type === "best_complexity") {
+    if (!full) return "–";
+    if (r.tier == null) return r.time_ms != null ? fmtBenchMs(r.time_ms, r.floor_ms ?? 0) : (r.class_label ?? "measuring…"); // measured the old way
+    const sizes = r.tiers ? `${r.tier}/${r.tiers} sizes` : "";
+    const time = r.time_ms != null ? ` - ${fmtSpeedMs(r.time_ms)}` : "";
+    return <span title={r.class_label ?? undefined}>{sizes + time}</span>;
+  }
   return r.solved_after_ms != null ? `solved after ${fmtElapsed(r.solved_after_ms)}` : "–";
 }
 
@@ -131,8 +150,11 @@ export function StandingsTable({ rows, type, highlight }: { rows: Standing[]; ty
               <td className={`px-2 tabular-nums ${r.passed === r.total ? "text-pass" : "text-round-yellow"}`}>
                 {r.passed}/{r.total}
               </td>
-              <td className="px-2 tabular-nums text-ink-200">{measureCell(type, r)}</td>
-              <td className="px-3 text-right tabular-nums text-white">{fmtPoints(r.points)}</td>
+              <td className="px-2 py-1.5 tabular-nums text-ink-200">
+                {measureCell(type, r)}
+                {!!r.bonus && <span className="ml-1.5 font-semibold text-round-yellow">(+{fmtPoints(r.bonus)} bonus)</span>}
+              </td>
+              <td className="px-3 text-right font-bold tabular-nums text-white">{fmtPoints(r.points)}</td>
             </tr>
           ))}
         </tbody>
@@ -270,7 +292,6 @@ export function WeeklyProblem({ id }: { id: string }) {
         </div>
         <h1 className="mt-2 font-stage text-4xl font-black text-white">{q.title}</h1>
         {detail.credit && <p className="mt-1 text-sm text-ink-400">{detail.credit}</p>}
-        <p className="mt-1 text-sm text-ink-300">{detail.rule}</p>
       </div>
       <Markdown className="text-ink-200">{q.description_md}</Markdown>
       {q.image_url && (
@@ -375,7 +396,15 @@ export function WeeklyProblem({ id }: { id: string }) {
           <h2 className="mb-2 font-stage text-xl font-black text-white">Your submissions</h2>
           {mine.standing && (
             <p className="mb-2 text-sm text-ink-200">
-              You&apos;re <b className="text-white">#{mine.standing.rank}</b> this week with <b className="text-white">{fmtPoints(mine.standing.points)}</b> points.
+              You&apos;re <b className="text-white">#{mine.standing.rank}</b> this week with <b className="text-white">{fmtPoints(mine.standing.points)}</b> points
+              {mine.standing.test_points != null && (
+                <>
+                  {" "}
+                  ({fmtPoints(mine.standing.test_points)}
+                  {mine.standing.bonus ? ` + ${fmtPoints(mine.standing.bonus)} bonus` : ""})
+                </>
+              )}
+              .
             </p>
           )}
           <ul className="space-y-1 text-sm">

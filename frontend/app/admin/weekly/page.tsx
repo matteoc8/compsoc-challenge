@@ -26,6 +26,8 @@ interface Week {
   published: boolean;
   solution_published: boolean;
   credit: string | null;
+  test_points: number;
+  bonus_points: number[];
   featured: boolean;
   entries: number;
   people: number;
@@ -40,8 +42,75 @@ interface Candidate {
 }
 
 interface Entries extends Week {
-  standings: { rank: number; name: string; email: string; passed: number | null; total: number | null; points: number; chars: number | null; class_label: string | null; time_ms: number | null; solved_after_ms: number | null }[];
-  submissions: { id: number; name: string; email: string; code: string; status: string; passed: number | null; total: number | null; verdict: string | null; chars: number; class_label: string | null; submitted_at: string }[];
+  standings: {
+    rank: number;
+    name: string;
+    email: string;
+    passed: number | null;
+    total: number | null;
+    points: number;
+    test_points: number;
+    bonus: number;
+    manual_bonus: boolean;
+    entry_id: number;
+    manual_entry_id?: number;
+    bonus_note?: string | null;
+    chars: number | null;
+    class_label: string | null;
+    time_ms: number | null;
+    vs_reference: number | null;
+    tier: number | null;
+    tiers: number | null;
+    solved_after_ms: number | null;
+  }[];
+  submissions: {
+    id: number;
+    name: string;
+    email: string;
+    code: string;
+    status: string;
+    passed: number | null;
+    total: number | null;
+    verdict: string | null;
+    chars: number;
+    class_label: string | null;
+    bonus_override: number | null;
+    bonus_note: string | null;
+    submitted_at: string;
+  }[];
+}
+
+/** Set (or clear) someone's bonus by hand, on one submission. Test points stay automatic. */
+function BonusEditor({ entryId, current, note, onSaved, onCancel }: { entryId: number; current: number; note?: string | null; onSaved: () => void; onCancel: () => void }) {
+  const [points, setPoints] = useState(String(current));
+  const [why, setWhy] = useState(note ?? "");
+  const [err, setErr] = useState<string | null>(null);
+  const send = async (value: number | null) => {
+    setErr(null);
+    try {
+      await api(`/weekly-admin/entries/${entryId}/bonus`, { method: "PUT", body: { bonus: value, note: why } });
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : String(e));
+    }
+  };
+  const n = Number(points);
+  return (
+    <span className="inline-flex flex-wrap items-center justify-end gap-1">
+      <input type="number" className="w-24 rounded border border-ink-600 bg-ink-900 px-1.5 py-0.5 text-right text-sm text-white" value={points} min={0} onChange={(e) => setPoints(e.target.value)} aria-label="Bonus" />
+      <input className="w-40 rounded border border-ink-600 bg-ink-900 px-1.5 py-0.5 text-sm text-white" value={why} maxLength={200} placeholder="Note, only admins see it" onChange={(e) => setWhy(e.target.value)} />
+      <Button size="sm" disabled={points.trim() === "" || !Number.isInteger(n) || n < 0} onClick={() => send(n)}>
+        Save
+      </Button>
+      <Button size="sm" variant="secondary" onClick={() => send(null)} title="Back to the automatic bonus">
+        Automatic
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onCancel}>
+        Cancel
+      </Button>
+      {err && <span className="w-full text-right text-xs text-fail">{err}</span>}
+    </span>
+  );
 }
 
 interface Form {
@@ -52,6 +121,17 @@ interface Form {
   published: boolean;
   solution_published: boolean;
   credit: string;
+  test_points: string;
+  bonus_points: string; // "500, 300, 150"
+}
+
+function parseBonus(raw: string): number[] | null {
+  const nums = raw
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map(Number);
+  return nums.every((x) => Number.isInteger(x) && x >= 0) && nums.length <= 10 ? nums : null;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -65,7 +145,7 @@ function blankForm(question_id = ""): Form {
   const close = new Date(open.getTime() + 5 * 24 * 3600 * 1000);
   close.setHours(0, 0, 0, 0);
   close.setDate(close.getDate() + ((2 - close.getDay() + 7) % 7));
-  return { question_id, opens_at: toLocal(open), closes_at: toLocal(close), published: true, solution_published: true, credit: "" };
+  return { question_id, opens_at: toLocal(open), closes_at: toLocal(close), published: true, solution_published: true, credit: "", test_points: "1000", bonus_points: "500, 300, 150" };
 }
 
 const PHASE_STYLE = { upcoming: "bg-round-blue/20 text-round-blue", open: "bg-pass/20 text-pass", closed: "bg-ink-600 text-ink-300" };
@@ -78,6 +158,7 @@ export default function AdminWeeklyPage() {
   const [form, setForm] = useState<Form | null>(null);
   const [view, setView] = useState<Entries | null>(null);
   const [openCode, setOpenCode] = useState<number | null>(null);
+  const [editing, setEditing] = useState<string | null>(null); // "row:<email>" or "sub:<id>"
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Week | null>(null);
@@ -112,7 +193,18 @@ export default function AdminWeeklyPage() {
   const saveForm = () =>
     act(async () => {
       const f = form!;
-      const body = { question_id: f.question_id, opens_at: new Date(f.opens_at).toISOString(), closes_at: new Date(f.closes_at).toISOString(), published: f.published, solution_published: f.solution_published, credit: f.credit };
+      const bonus = parseBonus(f.bonus_points);
+      if (!bonus) throw new Error("Bonus points: whole numbers separated by commas, e.g. 500, 300, 150 (up to 10 places)");
+      const body = {
+        question_id: f.question_id,
+        opens_at: new Date(f.opens_at).toISOString(),
+        closes_at: new Date(f.closes_at).toISOString(),
+        published: f.published,
+        solution_published: f.solution_published,
+        credit: f.credit,
+        test_points: Number(f.test_points) || 0,
+        bonus_points: bonus,
+      };
       await api(f.id ? `/weekly-admin/${f.id}` : "/weekly-admin", { method: f.id ? "PUT" : "POST", body });
       setForm(null);
       await load();
@@ -122,6 +214,21 @@ export default function AdminWeeklyPage() {
     act(async () => {
       setView(await api<Entries>(`/weekly-admin/${w.id}/entries`));
       setOpenCode(null);
+      setEditing(null);
+    });
+
+  const reloadView = async () => {
+    if (!view) return;
+    setView(await api<Entries>(`/weekly-admin/${view.id}/entries`));
+    setEditing(null);
+  };
+
+  const remeasure = () =>
+    act(async () => {
+      const r = await api<{ queued: number }>(`/weekly-admin/${view!.id}/remeasure`, { method: "POST" });
+      if (!r.queued) throw new Error("No correct submissions to measure.");
+      setNotice(null);
+      await reloadView();
     });
 
   if (!me) return null;
@@ -215,9 +322,20 @@ export default function AdminWeeklyPage() {
               </select>
             )}
           </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="block text-sm text-ink-200">
+              Points for passing every hidden test
+              <input type="number" min={0} className={`${input} mt-1 w-40`} value={form.test_points} onChange={(e) => setForm({ ...form, test_points: e.target.value })} />
+            </label>
+            <label className="block text-sm text-ink-200">
+              Bonus for 1st, 2nd, 3rd…
+              <input className={`${input} mt-1 w-56`} value={form.bonus_points} placeholder="500, 300, 150" onChange={(e) => setForm({ ...form, bonus_points: e.target.value })} />
+            </label>
+          </div>
           <p className="text-xs text-ink-400">
-            Scoring: up to 1,000 points a week. Fastest Code ranks by quickest execution on big inputs, Code Golf by shortest code; partial
-            solutions get partial credit below every full solve. Weekly points add up on the school leaderboard.
+            The test points are shared equally between the hidden tests (10 tests and 1,000 points = 100 per test). The bonus goes to the best correct
+            solutions, and only to ones that pass every hidden test (so they already have the full test points): shortest code for Code Golf; for Fastest Code, the largest input size finished, then the mean of 5 timed calls, with times
+            within 20% counting as a tie. Ties share the place. You can set anyone&apos;s bonus by hand under Entries.
           </p>
           <div className="flex gap-2">
             <Button size="sm" disabled={busy || !form.question_id} onClick={saveForm}>
@@ -257,7 +375,17 @@ export default function AdminWeeklyPage() {
               size="sm"
               variant="secondary"
               onClick={() =>
-                setForm({ id: w.id, question_id: w.question_id, opens_at: toLocal(new Date(w.opens_at)), closes_at: toLocal(new Date(w.closes_at)), published: w.published, solution_published: w.solution_published, credit: w.credit ?? "" })
+                setForm({
+                  id: w.id,
+                  question_id: w.question_id,
+                  opens_at: toLocal(new Date(w.opens_at)),
+                  closes_at: toLocal(new Date(w.closes_at)),
+                  published: w.published,
+                  solution_published: w.solution_published,
+                  credit: w.credit ?? "",
+                  test_points: String(w.test_points),
+                  bonus_points: w.bonus_points.join(", "),
+                })
               }
             >
               Edit
@@ -274,10 +402,25 @@ export default function AdminWeeklyPage() {
         <section className="mt-6 space-y-4 rounded-lg bg-ink-800 p-4 ring-1 ring-ink-600">
           <div className="flex items-center justify-between">
             <h2 className="font-bold text-white">Entries ({view.title})</h2>
-            <Button size="sm" variant="ghost" onClick={() => setView(null)}>
-              Close
-            </Button>
+            <div className="flex gap-2">
+              {view.type === "best_complexity" && (
+                <Button size="sm" variant="secondary" disabled={busy} onClick={remeasure} title="Time every correct submission again with the current benchmark">
+                  Re-measure speed
+                </Button>
+              )}
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => act(reloadView)}>
+                Refresh
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setView(null)}>
+                Close
+              </Button>
+            </div>
           </div>
+          <p className="text-xs text-ink-400">
+            {fmtPoints(view.test_points)} for passing every hidden test, bonus {view.bonus_points.map((b) => fmtPoints(b)).join(" / ") || "none"}. Click someone&apos;s
+            bonus to set it by hand: test points stay automatic, the automatic bonus places go to the next people, and the public page
+            shows it like any other bonus.
+          </p>
           <table className="w-full text-sm">
             <thead className="text-left text-xs text-ink-400">
               <tr>
@@ -286,6 +429,8 @@ export default function AdminWeeklyPage() {
                 <th>Email</th>
                 <th>Tests</th>
                 <th>Measure</th>
+                <th className="text-right">Tests</th>
+                <th className="text-right">Bonus</th>
                 <th className="text-right">Points</th>
               </tr>
             </thead>
@@ -303,7 +448,22 @@ export default function AdminWeeklyPage() {
                     {r.passed}/{r.total}
                   </td>
                   <td className="tabular-nums">{measureCell(view.type, r)}</td>
-                  <td className="text-right tabular-nums text-white">{fmtPoints(r.points)}</td>
+                  <td className="text-right tabular-nums text-ink-300">{fmtPoints(r.test_points)}</td>
+                  <td className="text-right tabular-nums text-round-yellow">
+                    {editing === `row:${r.email}` ? (
+                      <BonusEditor entryId={r.manual_entry_id ?? r.entry_id} current={r.bonus} note={r.bonus_note} onSaved={() => void act(reloadView)} onCancel={() => setEditing(null)} />
+                    ) : (
+                      <button
+                        className="hover:underline"
+                        title={r.manual_bonus ? `Set by hand${r.bonus_note ? `: ${r.bonus_note}` : ""}. Click to change.` : "Click to set the bonus by hand"}
+                        onClick={() => setEditing(`row:${r.email}`)}
+                      >
+                        {fmtPoints(r.bonus)}
+                        {r.manual_bonus && <span className="ml-1 rounded bg-round-yellow/20 px-1 text-xs">by hand</span>}
+                      </button>
+                    )}
+                  </td>
+                  <td className="text-right font-bold tabular-nums text-white">{fmtPoints(r.points)}</td>
                 </tr>
               ))}
             </tbody>
@@ -318,8 +478,22 @@ export default function AdminWeeklyPage() {
                   <span className={e.passed === e.total ? "text-pass" : "text-round-yellow"}>{e.status === "judged" ? `${e.passed}/${e.total}` : e.status}</span>
                   <span className="tabular-nums">{e.chars} chars</span>
                   {e.class_label && <span>{e.class_label}</span>}
+                  {e.bonus_override != null && (
+                    <span className="rounded bg-round-yellow/20 px-1 text-round-yellow" title={e.bonus_note ?? undefined}>
+                      {fmtPoints(e.bonus_override)} bonus set by hand
+                    </span>
+                  )}
                   <span className="ml-auto text-round-blue">{openCode === e.id ? "hide code" : "code"}</span>
                 </button>
+                <div className="mt-1 text-right">
+                  {editing === `sub:${e.id}` ? (
+                    <BonusEditor entryId={e.id} current={e.bonus_override ?? 0} note={e.bonus_note} onSaved={() => void act(reloadView)} onCancel={() => setEditing(null)} />
+                  ) : (
+                    <button className="text-ink-400 hover:text-white hover:underline" onClick={() => setEditing(`sub:${e.id}`)}>
+                      Set bonus…
+                    </button>
+                  )}
+                </div>
                 {openCode === e.id && <pre className="mt-2 overflow-x-auto rounded border border-ink-600 p-2 font-mono text-white">{e.code}</pre>}
               </li>
             ))}

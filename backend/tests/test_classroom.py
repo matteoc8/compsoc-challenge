@@ -181,8 +181,12 @@ def test_problem_of_the_week(client):
 
     board = c.get(f"/api/weekly/{wid}").json()["standings"]
     assert [r["name"] for r in board] == ["Ada Lovelace", "Bob Smith", "Cy Young"]
-    assert board[0]["points"] == 1000 and board[1]["points"] > board[2]["points"] > 0  # Cy: partial credit
-    assert "@" not in str(board)
+    # 1,000 for the tests (shared over them), plus 500 / 300 / 150 for the shortest full passes
+    assert [(r["test_points"], r["bonus"], r["points"]) for r in board[:2]] == [(1000, 500, 1500), (1000, 300, 1300)]
+    assert 0 < board[2]["points"] == board[2]["test_points"] < 1000 and board[2]["bonus"] == 0  # Cy: some tests
+    assert "@" not in str(board) and "entry_id" not in str(board)
+    assert "entry_id" not in str(c.get(f"/api/weekly/{wid}/mine", params={"email": "ada@school.example"}).json()["standing"])
+    assert "rule" not in detail and "scoring" not in detail
 
     # --- a second week (Best Time Complexity, measured at scale) adds to the school board
     c.cookies.clear()
@@ -194,7 +198,8 @@ def test_problem_of_the_week(client):
     for email in ("bob@school.example", "ada@school.example"):
         wait_mine(c, w2, email, 1)
     b2 = c.get(f"/api/weekly/{w2}").json()["standings"]
-    assert b2[0]["name"] == "Bob Smith" and b2[0]["class_label"] and b2[0]["points"] == 1000
+    assert b2[0]["name"] == "Bob Smith" and b2[0]["class_label"] and b2[0]["points"] == 1500
+    assert b2[0]["tier"] == b2[0]["tiers"] == 3 and b2[0]["time_ms"] is not None
     school = c.get("/api/weekly/leaderboard").json()
     totals = {r["name"]: r for r in school["rows"]}
     assert school["weeks"] == 2 and totals["Ada Lovelace"]["weeks"] == 2 and totals["Ada Lovelace"]["wins"] == 1 and totals["Bob Smith"]["wins"] == 1
@@ -217,6 +222,42 @@ def test_problem_of_the_week(client):
     entries = c.get(f"/api/weekly-admin/{wid}/entries").json()
     assert {e["email"] for e in entries["submissions"]} == {"ada@school.example", "bob@school.example", "cy@school.example"}
     assert entries["people"] == 3 and entries["standings"][0]["email"] == "ada@school.example"
+
+    # a bonus set by hand replaces someone's bonus (test points stay), the automatic places
+    # move to the next person, and only admins can tell
+    cy = next(r for r in entries["standings"] if r["email"] == "cy@school.example")
+    ada_entry = entries["standings"][0]["entry_id"]
+    assert c.put(f"/api/weekly-admin/entries/{ada_entry}/bonus", json={"bonus": 0, "note": "copied"}).status_code == 200
+    assert c.put(f"/api/weekly-admin/entries/{cy['entry_id']}/bonus", json={"bonus": 2000}).status_code == 200
+    rows = {r["email"]: r for r in c.get(f"/api/weekly-admin/{wid}/entries").json()["standings"]}
+    assert rows["cy@school.example"]["points"] == cy["test_points"] + 2000 and rows["cy@school.example"]["manual_bonus"] and rows["cy@school.example"]["rank"] == 1
+    assert rows["ada@school.example"]["points"] == 1000 and rows["ada@school.example"]["bonus_note"] == "copied"
+    assert rows["bob@school.example"]["bonus"] == 500  # Ada is out of the bonus places
+    c.cookies.clear()
+    public = str(c.get(f"/api/weekly/{wid}").json()) + str(c.get(f"/api/weekly/{wid}/mine", params={"email": "ada@school.example"}).json())
+    assert "manual" not in public and "copied" not in public and "bonus_note" not in public
+    login_teacher(c, password="correct-horse-battery")
+    assert c.put(f"/api/weekly-admin/entries/{ada_entry}/bonus", json={"bonus": -1}).status_code == 422
+    for e in (ada_entry, cy["entry_id"]):
+        assert c.put(f"/api/weekly-admin/entries/{e}/bonus", json={"bonus": None}).status_code == 200
+    assert c.get(f"/api/weekly-admin/{wid}/entries").json()["standings"][0]["points"] == 1500
+    assert c.put("/api/weekly-admin/entries/999999/bonus", json={"bonus": 1}).status_code == 404
+    assert c.post(f"/api/weekly-admin/{wid}/remeasure").status_code == 400  # Code Golf isn't timed
+    assert c.post(f"/api/weekly-admin/{w2}/remeasure").json() == {"queued": 2}
+
+    def remeasured():
+        rows = c.get(f"/api/weekly-admin/{w2}/entries").json()["submissions"]
+        return all(r["status"] == "judged" for r in rows)
+
+    wait_until(remeasured, 60, what="re-measuring")
+    assert c.get(f"/api/weekly-admin/{w2}/entries").json()["standings"][0]["name"] == "Bob Smith"
+
+    # the week's points can be changed
+    custom = {**week, "test_points": 400, "bonus_points": [100]}
+    assert c.put(f"/api/weekly-admin/{wid}", json=custom).json()["bonus_points"] == [100]
+    assert [r["points"] for r in c.get(f"/api/weekly-admin/{wid}/entries").json()["standings"][:2]] == [500, 400]
+    assert c.put(f"/api/weekly-admin/{wid}", json={**week, "bonus_points": [-5]}).status_code == 422
+    assert c.put(f"/api/weekly-admin/{wid}", json=week).status_code == 200
     closed = {**week, "opens_at": iso(now - timedelta(days=7)), "closes_at": iso(now - timedelta(minutes=1)), "solution_published": True}
     assert c.put(f"/api/weekly-admin/{wid}", json=closed).status_code == 200
     assert c.put(f"/api/weekly-admin/{wid}", json={**closed, "question_id": cx["id"]}).status_code == 409  # has entries

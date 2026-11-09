@@ -1,14 +1,15 @@
 """Problem of the week. The teacher picks a verified coding question from one of their quizzes
 and sets when it opens and closes; anyone at school enters their full name and school email, runs
-and submits code, and is ranked by the question's own rule (fewest characters, fastest at scale,
-or first to solve it). The email links someone's entries across weeks, and the name is fixed to
+and submits code. Points: the week's test points shared over the hidden tests, plus a bonus for
+the best full solves by the question's own rule (fewest characters, or fastest at scale), and an
+admin can set anyone's bonus by hand. The email links someone's entries across weeks, and the name is fixed to
 it at first entry. Weekly points add up into a school-wide leaderboard for this week, this month,
 this school year or all time. Emails are never public."""
 
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,24 +22,25 @@ from ..auth import current_teacher
 from ..config import get_settings
 from ..db import get_session, session_scope
 from ..engine import judging
-from ..engine.scoring import Entry, Partial, partial_points, score_at_close
+from ..engine.scoring import tie_groups, weekly_bonus, weekly_test_points
 from ..engine.serialize import serialize_question
 from ..engine.views import now
-from ..judge.benchmark import measure
+from ..judge import speed
 from ..judge.client import ACCEPTED, ExecRequest, JudgeUnavailable, outputs_match, status_text
-from ..judge.golf import GOLF_RULE_TEXT, golf_chars
+from ..judge.golf import golf_chars
 from ..judge.queue import WEEKLY
 from ..limiter import limiter
 from ..models import FeaturedProblem, ProblemGroup, Question, QuestionType, Quiz, Teacher, WeeklyEntry, WeeklyPerson, WeeklyProblem
 from ..runtime import rt
-from ..schemas.question import Closest, QuestionConfig, Ranked
+from ..schemas.question import QuestionConfig
 from .problems import clean_email
 
 router = APIRouter(tags=["weekly"])
 
-# Weekly scoring: up to 1,000 a week, so the school board rewards turning up every week.
-WEEKLY_CLOSEST = Closest(max=1000, min_share=0.5, partial_credit=0.5)
-WEEKLY_RANKED = Ranked(points=[1000 - 50 * i for i in range(20)], partial_credit=0.5)  # first to solve
+# Weekly scoring, per week: test_points shared over the hidden tests, plus a bonus for the best
+# full solves (1st, 2nd, 3rd...). Defaults below; the admin can change them for each week.
+DEFAULT_TEST_POINTS = 1000
+DEFAULT_BONUS = [500, 300, 150]
 # Fastest Code (best_complexity) and Code Golf. Super Fast ("first to solve it") isn't offered:
 # over a whole week it mostly rewards whoever sees the problem first.
 WEEKLY_TYPES = (QuestionType.best_complexity, QuestionType.code_golf)
@@ -46,7 +48,7 @@ SUBMIT_COOLDOWN_S = 10
 SUBMIT_MAX = 30  # per person per week
 IN_FLIGHT = ("queued", "running", "measuring")
 _last_submit: dict[str, float] = {}
-_bench_cache: dict[tuple, tuple] = {}  # (question id, updated_at) -> (baseline, reference)
+_bench_cache: dict[tuple, tuple] = {}  # (question id, updated_at) -> (baseline, reference run)
 try:
     SCHOOL_TZ = ZoneInfo("Europe/London")  # where "this week" and "this month" start
 except ZoneInfoNotFoundError:  # no tzdata installed
@@ -68,67 +70,99 @@ def phase(w: WeeklyProblem, at: datetime | None = None) -> str:
 # ------------------------------------------------------------------ standings
 
 
-def _measure_of(q: Question, e: WeeklyEntry, opens_at: datetime) -> float | None:
-    """The round's own measure, lower is better."""
-    full = bool(e.tests_total) and e.tests_passed == e.tests_total
+def bonus_of(w: WeeklyProblem) -> list[int]:
+    return list(w.bonus_points) if w.bonus_points is not None else list(DEFAULT_BONUS)
+
+
+def _measure_of(q: Question, e: WeeklyEntry, opens_at: datetime) -> tuple | None:
+    """The round's own measure for a full pass, lower is better. None = not measured."""
     if q.type == QuestionType.code_golf:
-        return e.char_count
+        return (e.char_count,)
     if q.type == QuestionType.best_complexity:
-        return (e.perf or {}).get("score_ms") if full else e.exec_time_ms
-    return max((e.submitted_at - opens_at).total_seconds() * 1000, 0)
+        return speed.rank_key(e.perf)
+    return (max((e.submitted_at - opens_at).total_seconds() * 1000, 0),)  # older Super Fast weeks
+
+
+def tie_share(q: Question) -> float:
+    """Fastest Code times within 20% are a tie; characters and solve order must be equal."""
+    return speed.TIE_SHARE if q.type == QuestionType.best_complexity else 0.0
 
 
 def standings(w: WeeklyProblem, q: Question, entries: list[WeeklyEntry], people: dict[str, WeeklyPerson], with_email: bool = False) -> list[dict]:
-    """Each person's best entry, scored like a coding round: full passes by closeness to the
-    best (or order of solving), partial passes below every full pass. Banned people are left out
-    and everyone is shown under the name on their email."""
+    """Each person's best entry (most tests passed, then the best measure). Points are the
+    week's test points for the share of hidden tests passed, plus a bonus by place among
+    full passes (ties: scoring.tie_groups). A bonus set by hand on any of someone's entries
+    replaces their bonus (the latest edit counts; test points stay automatic), and they're
+    left out of the bonus places, which go to the next people. Only admins (with_email) see
+    that it was set by hand. Banned people are left out and everyone is shown under the name
+    on their email."""
     names: dict[str, str] = {}
-    best: dict[str, tuple[tuple, WeeklyEntry, float | None]] = {}
+    best: dict[str, tuple[tuple, WeeklyEntry]] = {}
+    manual: dict[str, WeeklyEntry] = {}
     for e in sorted(entries, key=lambda x: x.id):
         person = people.get(e.email)
         if person and person.banned:
             continue
         names[e.email] = person.name if person else e.name
+        if e.bonus_override is not None:
+            cur = manual.get(e.email)
+            if cur is None or (e.bonus_override_at or e.submitted_at) >= (cur.bonus_override_at or cur.submitted_at):
+                manual[e.email] = e
         if e.status != "judged" or not e.tests_total:
             continue
-        m = _measure_of(q, e, w.opens_at)
-        key = (e.tests_passed or 0, m is not None, -(m or 0), -e.id)
+        m = _measure_of(q, e, w.opens_at) if e.tests_passed == e.tests_total else None
+        # more tests, then measured, then the better measure, then the earlier entry
+        key = (e.tests_passed or 0, m is not None, tuple(-x for x in m) if m else (), -e.id)
         if e.email not in best or key > best[e.email][0]:
-            best[e.email] = (key, e, m)
-    rule = WEEKLY_RANKED if q.type == QuestionType.super_fast else WEEKLY_CLOSEST
-    full = [Entry(email, m, e.id) for email, (_, e, m) in best.items() if e.tests_passed == e.tests_total]
-    points = score_at_close(rule, full)
-    partial = [
-        Partial(email, e.tests_passed or 0, e.tests_total, m)
-        for email, (_, e, m) in best.items()
-        if e.tests_passed != e.tests_total or points.get(email, 0) == 0
-    ]
-    points.update(partial_points(rule, partial))
-    bench = QuestionConfig(**q.config).benchmark if q.type == QuestionType.best_complexity else None
-    floor_ms = bench.floor_ms if bench else None  # anything quicker counts as this
+            best[e.email] = (key, e)
+    measures = {
+        email: _measure_of(q, e, w.opens_at)
+        for email, (_, e) in best.items()
+        if email not in manual and e.tests_passed == e.tests_total
+    }
+    bonus = weekly_bonus(bonus_of(w), measures, tie_share(q))
+    places = tie_groups(measures, tie_share(q))
     rows = []
-    for email, (_, e, m) in best.items():
+    for email in set(best) | set(manual):
+        e = best[email][1] if email in best else manual[email]
+        perf = (e.perf or {}) if q.type == QuestionType.best_complexity else {}
+        tests = weekly_test_points(w.test_points, e.tests_passed or 0, e.tests_total or 0) if email in best else 0
+        m = manual.get(email)
+        if m:
+            b = m.bonus_override
+        else:
+            b = bonus.get(email, 0) if tests == w.test_points else 0  # only on top of the full test points
+        key = measures.get(email)
         row = {
             "name": names[email],
             "passed": e.tests_passed,
             "total": e.tests_total,
-            "points": points.get(email, 0),
+            "points": tests + b,
+            "test_points": tests,
+            "bonus": b,
             "chars": e.char_count if q.type == QuestionType.code_golf else None,
-            "class_label": (e.perf or {}).get("class_label") if q.type == QuestionType.best_complexity else None,
-            "time_ms": (e.perf or {}).get("score_ms") if q.type == QuestionType.best_complexity else None,  # what's ranked
-            "floor_ms": floor_ms,
-            "solved_after_ms": m if q.type == QuestionType.super_fast and e.tests_passed == e.tests_total else None,
+            "class_label": speed.describe(perf) if perf else None,
+            "time_ms": perf.get("top_ms"),
+            "tier": perf.get("tier"),
+            "tiers": perf.get("tiers"),
+            "floor_ms": None,
+            "solved_after_ms": key[0] if q.type == QuestionType.super_fast and key else None,
             "submitted_at": e.submitted_at.isoformat(),
-            "_measure": m if m is not None else float("inf"),
+            "_order": (places.get(email, len(places)), key or (float("inf"),)),
         }
         if with_email:
             row["email"] = email
+            row["entry_id"] = e.id
+            row["manual_bonus"] = m is not None
+            row["vs_reference"] = perf.get("vs_reference")
+            if m:
+                row["manual_entry_id"], row["bonus_note"] = m.id, m.bonus_note
         rows.append(row)
-    rows.sort(key=lambda r: (-r["points"], -(r["passed"] or 0), r["_measure"]))
+    rows.sort(key=lambda r: (-r["points"], -(r["passed"] or 0), r["_order"], r["name"].lower()))
     for i, r in enumerate(rows):
         same = i > 0 and r["points"] == rows[i - 1]["points"]
         r["rank"] = rows[i - 1]["rank"] if same else i + 1
-        del r["_measure"]
+        del r["_order"]
     return rows
 
 
@@ -185,6 +219,8 @@ def summary(w: WeeklyProblem, q: Question) -> dict:
         "closes_at": w.closes_at.isoformat(),
         "phase": phase(w),
         "credit": w.credit,
+        "test_points": w.test_points,
+        "bonus_points": bonus_of(w),
     }
 
 
@@ -246,15 +282,11 @@ async def school_leaderboard(period: Period = "all", group: str = "all", s: Asyn
 async def weekly_detail(weekly_id: str, s: AsyncSession = Depends(get_session)):
     w, q = await _public(s, weekly_id)
     question = serialize_question(q, "team")  # no hidden tests, harness or reference solution
-    for k in ("round_name", "position", "time_limit_s", "unlimited_time", "scoring", "scoring_max", "rule_line"):
+    for k in ("round_name", "position", "time_limit_s", "unlimited_time", "scoring", "scoring_max", "rule_line", "golf_rule"):
         question.pop(k, None)
     out = {
         **summary(w, q),
         "question": question,
-        "rule": {
-            QuestionType.code_golf: "Shortest code wins. " + GOLF_RULE_TEXT,
-            QuestionType.best_complexity: "Quickest execution wins: every correct solution is timed on large inputs.",
-        }.get(q.type, "First to solve it wins."),
         "standings": standings(w, q, await _entries(s, w.id), await _people(s)),
         "email_domain": get_settings().school_email_domain.strip().lower().lstrip("@") or None,
     }
@@ -410,7 +442,8 @@ async def weekly_mine(weekly_id: str, email: str, s: AsyncSession = Depends(get_
     mine = sorted((e for e in entries if e.email == email), key=lambda e: e.id)
     me = next((r for r in standings(w, q, entries, await _people(s), with_email=True) if r["email"] == email), None)
     if me:
-        me.pop("email")
+        for k in ("email", "entry_id", "manual_bonus", "manual_entry_id", "bonus_note", "vs_reference"):  # admins only
+            me.pop(k, None)
     return {
         "standing": me,
         "submissions": [
@@ -423,7 +456,7 @@ async def weekly_mine(weekly_id: str, email: str, s: AsyncSession = Depends(get_
                 "first_failed": e.first_failed,
                 "error_summary": e.error_summary,
                 "chars": e.char_count,
-                "class_label": (e.perf or {}).get("class_label"),
+                "class_label": speed.describe(e.perf),
                 "time_ms": (e.perf or {}).get("top_ms"),
                 "submitted_at": e.submitted_at.isoformat(),
             }
@@ -435,13 +468,24 @@ async def weekly_mine(weekly_id: str, email: str, s: AsyncSession = Depends(get_
 # ------------------------------------------------------------------ judging
 
 
-async def _bench_refs(q: Question, bench_cfg):
+async def _speed_refs(q: Question, bench) -> tuple[speed.Baseline, speed.SpeedResult]:
+    """The generator-only baseline and the reference solution's run, once per question version."""
     key = (str(q.id), q.updated_at.isoformat() if q.updated_at else "")
     if key not in _bench_cache:
-        baseline = await measure(rt.executor, bench_cfg, None)
-        ref = await measure(rt.executor, bench_cfg, q.reference_solution, baseline.times_ms)
-        _bench_cache[key] = (baseline, ref)
+        base = await speed.baseline(rt.executor, bench)
+        ref = await speed.measure(rt.executor, bench, q.reference_solution, base, None)
+        _bench_cache[key] = (base, ref)
     return _bench_cache[key]
+
+
+async def measure_speed(q: Question, code: str) -> dict:
+    bench = QuestionConfig(**q.config).benchmark
+    try:
+        base, ref = await _speed_refs(q, bench)
+        res = await speed.measure(rt.executor, bench, code, base, {r.n: r.hash for r in ref.runs})
+    except JudgeUnavailable:
+        return {"method": "tiers", "tier": None, "class_label": "not measured (judge down)"}
+    return speed.to_perf(res, bench.sizes, ref)
 
 
 async def judge_entry(entry_id: int) -> None:
@@ -474,11 +518,21 @@ async def judge_entry(entry_id: int) -> None:
         e.judged_at = now()
     if not measure_it:
         return
-    try:
-        baseline, ref = await _bench_refs(q, cfg.benchmark)
-        info = await judging.measure_entry(cfg.benchmark, code, baseline, ref)
-    except JudgeUnavailable:
-        info = {"score_ms": None, "class_label": "not measured (judge down)"}
+    info = await measure_speed(q, code)
+    async with session_scope() as s:
+        if e := await s.get(WeeklyEntry, entry_id):
+            e.perf, e.status = info, "judged"
+
+
+async def remeasure_entry(entry_id: int) -> None:
+    async with session_scope() as s:
+        e = await s.get(WeeklyEntry, entry_id)
+        if not e or e.status != "measuring":
+            return
+        w = await s.get(WeeklyProblem, e.weekly_id)
+        q = await s.get(Question, w.question_id)
+        code = e.code
+    info = await measure_speed(q, code)
     async with session_scope() as s:
         if e := await s.get(WeeklyEntry, entry_id):
             e.perf, e.status = info, "judged"
@@ -579,7 +633,7 @@ async def admin_person(email: str, t: Teacher = Depends(current_teacher), s: Asy
                         "total": e.tests_total,
                         "verdict": e.verdict,
                         "chars": e.char_count,
-                        "class_label": (e.perf or {}).get("class_label"),
+                        "class_label": speed.describe(e.perf),
                         "time_ms": (e.perf or {}).get("top_ms"),
                         "submitted_at": e.submitted_at.isoformat(),
                     }
@@ -631,6 +685,8 @@ class WeeklyIn(BaseModel):
     published: bool = False
     solution_published: bool = False
     credit: str | None = Field(default=None, max_length=80)  # e.g. "Submitted by Sam Smith"
+    test_points: int = Field(default=DEFAULT_TEST_POINTS, ge=0, le=100_000)
+    bonus_points: list[Annotated[int, Field(ge=0, le=100_000)]] = Field(default_factory=lambda: list(DEFAULT_BONUS), max_length=10)
 
     @model_validator(mode="after")
     def _dates(self):
@@ -710,6 +766,8 @@ async def admin_create(body: WeeklyIn, t: Teacher = Depends(current_teacher), s:
         published=body.published,
         solution_published=body.solution_published,
         credit=(body.credit or "").strip() or None,
+        test_points=body.test_points,
+        bonus_points=body.bonus_points,
     )
     s.add(w)
     await s.flush()
@@ -725,6 +783,7 @@ async def admin_edit(weekly_id: str, body: WeeklyIn, t: Teacher = Depends(curren
     w.question_id, w.opens_at, w.closes_at = q.id, body.opens_at, body.closes_at
     w.published, w.solution_published = body.published, body.solution_published
     w.credit = (body.credit or "").strip() or None
+    w.test_points, w.bonus_points = body.test_points, body.bonus_points
     return await admin_row(s, w)
 
 
@@ -754,13 +813,55 @@ async def admin_entries(weekly_id: str, t: Teacher = Depends(current_teacher), s
                 "total": e.tests_total,
                 "verdict": e.verdict,
                 "chars": e.char_count,
-                "class_label": (e.perf or {}).get("class_label"),
+                "class_label": speed.describe(e.perf),
                 "time_ms": (e.perf or {}).get("top_ms"),
+                "vs_reference": (e.perf or {}).get("vs_reference"),
+                "bonus_override": e.bonus_override,
+                "bonus_note": e.bonus_note,
                 "submitted_at": e.submitted_at.isoformat(),
             }
             for e in sorted(entries, key=lambda e: e.id, reverse=True)
         ],
     }
+
+
+class BonusIn(BaseModel):
+    bonus: int | None = Field(default=None, ge=0, le=100_000)  # None goes back to automatic
+    note: str | None = Field(default=None, max_length=200)  # admins only
+
+
+@router.put("/weekly-admin/entries/{entry_id}/bonus")
+async def admin_set_bonus(entry_id: int, body: BonusIn, t: Teacher = Depends(current_teacher), s: AsyncSession = Depends(get_session)):
+    """Set someone's bonus for the week by hand, on one of their submissions (their test points
+    stay automatic). The latest edit of theirs counts, they're left out of the automatic bonus
+    places, and it looks automatic to everyone but admins. bonus=None clears it."""
+    e = await s.get(WeeklyEntry, entry_id)
+    w = await s.get(WeeklyProblem, e.weekly_id) if e else None
+    if not e or not w or w.owner_id != t.id:
+        raise HTTPException(404, "Submission not found")
+    e.bonus_override = body.bonus
+    e.bonus_override_at = now() if body.bonus is not None else None
+    e.bonus_note = ((body.note or "").strip() or None) if body.bonus is not None else None
+    return {"id": e.id, "bonus_override": e.bonus_override, "bonus_note": e.bonus_note}
+
+
+@router.post("/weekly-admin/{weekly_id}/remeasure")
+async def admin_remeasure(weekly_id: str, t: Teacher = Depends(current_teacher), s: AsyncSession = Depends(get_session)):
+    """Time every full-pass Fastest Code submission again (e.g. after changing the benchmark,
+    or ones measured the old way). They show as "measuring" until done."""
+    w = await _own_weekly(s, weekly_id, t)
+    q = await s.get(Question, w.question_id)
+    if q.type != QuestionType.best_complexity or not QuestionConfig(**q.config).benchmark:
+        raise HTTPException(400, "Only Fastest Code weeks are measured")
+    for k in [k for k in _bench_cache if k[0] == str(q.id)]:
+        del _bench_cache[k]  # time the reference again too
+    rows = [e for e in await _entries(s, w.id) if e.status == "judged" and e.tests_total and e.tests_passed == e.tests_total]
+    for e in rows:
+        e.status = "measuring"
+    await s.commit()
+    for e in rows:
+        rt.queue.put(WEEKLY, lambda i=e.id: remeasure_entry(i))
+    return {"queued": len(rows)}
 
 
 

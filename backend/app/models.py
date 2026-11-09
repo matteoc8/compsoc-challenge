@@ -383,6 +383,10 @@ class WeeklyProblem(Base):
     solution_published: Mapped[bool] = mapped_column(Boolean, default=False)  # shown once it has closed
     credit: Mapped[str | None] = mapped_column(Text, nullable=True)  # added: e.g. "Submitted by Sam Smith"
     featured_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)  # added: copied to Past Weekly Problems
+    # added: points for passing every hidden test (shared over the tests), and the bonus for
+    # the best full solves, 1st place first. None means the default.
+    test_points: Mapped[int] = mapped_column(Integer, default=1000, server_default="1000")
+    bonus_points: Mapped[list | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -408,6 +412,11 @@ class WeeklyEntry(Base):
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     exec_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     perf: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # best complexity benchmark
+    # added: a bonus set by hand. It replaces the person's bonus for the week (test points stay
+    # automatic), and isn't shown publicly as set by hand.
+    bonus_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bonus_override_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    bonus_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     judged_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 

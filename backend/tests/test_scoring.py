@@ -122,3 +122,27 @@ def test_partial_credit_rules():
     assert partial_points(Flat(), [Partial("a", 5, 10, 999), Partial("b", 5, 10, 1)]) == {"a": 1000, "b": 1000}
     # no measurement (e.g. no test time) still lands in its band, at the bottom of it
     assert partial_points(Closest(), [Partial("a", 3, 10, None), Partial("b", 3, 10, 50)]) == {"a": 250, "b": 300}
+
+
+def test_weekly_points_and_ties():
+    from app.engine.scoring import tie_groups, weekly_bonus, weekly_test_points
+
+    assert weekly_test_points(1000, 7, 10) == 700 and weekly_test_points(1000, 0, 10) == 0 and weekly_test_points(500, 3, 3) == 500
+    # Code Golf: exact ties share the place, the next place is skipped
+    golf = {"a": (40,), "b": (40,), "c": (41,), "d": None}
+    assert weekly_bonus([500, 300, 150], golf) == {"a": 500, "b": 500, "c": 150, "d": 0}
+    # Fastest Code: more sizes first, then mean ms within 20% of the group's leader is a tie
+    fast = {"a": (-3, 10.0), "b": (-3, 11.9), "c": (-3, 12.1), "d": (-3, 14.0), "e": (-2, 1.0)}
+    assert tie_groups(fast, 0.2) == {"a": 0, "b": 0, "c": 2, "d": 2, "e": 4}
+    assert weekly_bonus([500, 300, 150], fast, 0.2) == {"a": 500, "b": 500, "c": 150, "d": 150, "e": 0}
+    # a chain doesn't stretch a tie: 10 -> 12 -> 14.4 is two groups
+    assert tie_groups({"a": (-1, 10.0), "b": (-1, 12.0), "c": (-1, 14.4)}, 0.2) == {"a": 0, "b": 0, "c": 2}
+
+
+def test_speed_rank_key():
+    from app.judge.speed import rank_key
+
+    assert rank_key(None) is None and rank_key({"method": "tiers", "tier": None}) is None
+    assert rank_key({"method": "tiers", "tier": 3, "top_ms": 1.5}) == (-3, 1.5)
+    # measured the old way: sizes finished, then the old time
+    assert rank_key({"times_ms": {"500": 1, "2000": 2}, "top_ms": None, "score_ms": None, "timed_out_at": 8000}) == (-2, float("inf"))
