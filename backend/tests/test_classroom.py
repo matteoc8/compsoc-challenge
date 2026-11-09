@@ -223,8 +223,8 @@ def test_problem_of_the_week(client):
     assert {e["email"] for e in entries["submissions"]} == {"ada@school.example", "bob@school.example", "cy@school.example"}
     assert entries["people"] == 3 and entries["standings"][0]["email"] == "ada@school.example"
 
-    # a bonus set by hand replaces someone's bonus (test points stay), the automatic places
-    # move to the next person, and only admins can tell
+    # a bonus set by hand replaces only that person's bonus (test points stay, everyone else
+    # keeps theirs), and only admins can tell
     cy = next(r for r in entries["standings"] if r["email"] == "cy@school.example")
     ada_entry = entries["standings"][0]["entry_id"]
     assert c.put(f"/api/weekly-admin/entries/{ada_entry}/bonus", json={"bonus": 0, "note": "copied"}).status_code == 200
@@ -232,7 +232,7 @@ def test_problem_of_the_week(client):
     rows = {r["email"]: r for r in c.get(f"/api/weekly-admin/{wid}/entries").json()["standings"]}
     assert rows["cy@school.example"]["points"] == cy["test_points"] + 2000 and rows["cy@school.example"]["manual_bonus"] and rows["cy@school.example"]["rank"] == 1
     assert rows["ada@school.example"]["points"] == 1000 and rows["ada@school.example"]["bonus_note"] == "copied"
-    assert rows["bob@school.example"]["bonus"] == 500  # Ada is out of the bonus places
+    assert rows["bob@school.example"]["bonus"] == 300  # still 2nd: nobody moves up
     c.cookies.clear()
     public = str(c.get(f"/api/weekly/{wid}").json()) + str(c.get(f"/api/weekly/{wid}/mine", params={"email": "ada@school.example"}).json())
     assert "manual" not in public and "copied" not in public and "bonus_note" not in public

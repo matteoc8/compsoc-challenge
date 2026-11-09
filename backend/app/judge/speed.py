@@ -193,13 +193,13 @@ WHY = {"slow": "timed out", "wrong": "wrong answer", "error": "error"}
 
 
 def describe(perf: dict | None) -> str | None:
-    """How a measured entry is shown: "passed 3/3 sizes in 1.61 ms", or
-    "passed 1/3 sizes in 21.0 ms (timed out)". Old-style entries keep their own label."""
+    """How a measured entry is shown: "3/3 test sizes in 1.61 ms", or
+    "1/3 test sizes in 21.0 ms (timed out)". Old-style entries keep their own label."""
     if not perf:
         return None
     if perf.get("method") != "tiers" or perf.get("tier") is None:
         return perf.get("class_label")
-    out = f"passed {perf['tier']}/{perf.get('tiers')} sizes"
+    out = f"{perf['tier']}/{perf.get('tiers')} test sizes"
     if perf.get("top_ms") is not None:
         out += f" in {fmt_ms(perf['top_ms'])}"
     if perf["tier"] != perf.get("tiers"):

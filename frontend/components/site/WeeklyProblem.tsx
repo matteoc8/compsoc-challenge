@@ -119,7 +119,7 @@ export function measureCell(
   if (type === "best_complexity") {
     if (!full) return "–";
     if (r.tier == null) return r.time_ms != null ? fmtBenchMs(r.time_ms, r.floor_ms ?? 0) : (r.class_label ?? "measuring…"); // measured the old way
-    const sizes = r.tiers ? `${r.tier}/${r.tiers} sizes` : "";
+    const sizes = r.tiers ? `${r.tier}/${r.tiers} test sizes` : "";
     const time = r.time_ms != null ? ` - ${fmtSpeedMs(r.time_ms)}` : "";
     return <span title={r.class_label ?? undefined}>{sizes + time}</span>;
   }
@@ -407,23 +407,47 @@ export function WeeklyProblem({ id }: { id: string }) {
               .
             </p>
           )}
-          <ul className="space-y-1 text-sm">
-            {[...mine.submissions].reverse().map((x) => (
-              <li key={x.id} className="flex flex-wrap items-center gap-3 rounded bg-ink-800 px-3 py-1.5">
-                <span className="text-xs text-ink-400">{new Date(x.submitted_at).toLocaleString("en-GB")}</span>
-                {["queued", "running", "measuring"].includes(x.status) ? (
-                  <span className="animate-pulse text-round-yellow">{x.status === "measuring" ? "measuring speed…" : "judging…"}</span>
-                ) : (
-                  <span className={x.passed === x.total ? "font-bold text-pass" : "text-round-yellow"}>
-                    {x.passed}/{x.total} tests{x.passed !== x.total && x.verdict ? ` (${x.verdict}${x.first_failed ? ` on test ${x.first_failed}` : ""})` : ""}
-                  </span>
-                )}
-                {detail.type === "code_golf" && <span className="tabular-nums text-ink-200">{x.chars} chars</span>}
-                {x.class_label && <span className="text-ink-200">{x.class_label}</span>}
-                {x.error_summary && <span className="tabular-nums text-xs text-fail">{x.error_summary}</span>}
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto rounded-lg ring-1 ring-ink-600">
+            <table className="w-full text-sm">
+              <thead className="bg-ink-700 text-left text-xs text-ink-300">
+                <tr>
+                  <th className="px-3 py-2">Submitted</th>
+                  <th className="px-2">Tests</th>
+                  {detail.type === "best_complexity" && <th className="px-3">Execution speed</th>}
+                  {detail.type === "code_golf" && <th className="px-3">Length</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {[...mine.submissions].reverse().map((x) => {
+                  const judging = x.status === "queued" || x.status === "running";
+                  return (
+                    <tr key={x.id} className="border-t border-ink-700 bg-ink-800 align-top">
+                      <td className="whitespace-nowrap px-3 py-1.5 text-xs text-ink-400">{new Date(x.submitted_at).toLocaleString("en-GB")}</td>
+                      <td className="px-2 py-1.5">
+                        {judging ? (
+                          <span className="animate-pulse text-round-yellow">judging…</span>
+                        ) : x.status === "error" ? (
+                          <span className="text-fail">judge error</span>
+                        ) : (
+                          <span className={x.passed === x.total ? "font-bold text-pass" : "text-round-yellow"}>
+                            {x.passed}/{x.total}
+                            {x.passed !== x.total && x.verdict ? ` (${x.verdict}${x.first_failed ? ` on test ${x.first_failed}` : ""})` : ""}
+                          </span>
+                        )}
+                        {x.error_summary && <div className="text-xs text-fail">{x.error_summary}</div>}
+                      </td>
+                      {detail.type === "best_complexity" && (
+                        <td className="px-3 py-1.5 tabular-nums text-ink-200">
+                          {x.status === "measuring" ? <span className="animate-pulse text-round-yellow">measuring…</span> : (x.class_label ?? "–")}
+                        </td>
+                      )}
+                      {detail.type === "code_golf" && <td className="px-3 py-1.5 tabular-nums text-ink-200">{x.chars} chars</td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           {last && last.status === "error" && <p className="mt-1 text-xs text-fail">The judge had a problem with that one. Try submitting again.</p>}
         </section>
       )}

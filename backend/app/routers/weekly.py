@@ -92,9 +92,9 @@ def standings(w: WeeklyProblem, q: Question, entries: list[WeeklyEntry], people:
     """Each person's best entry (most tests passed, then the best measure). Points are the
     week's test points for the share of hidden tests passed, plus a bonus by place among
     full passes (ties: scoring.tie_groups). A bonus set by hand on any of someone's entries
-    replaces their bonus (the latest edit counts; test points stay automatic), and they're
-    left out of the bonus places, which go to the next people. Only admins (with_email) see
-    that it was set by hand. Banned people are left out and everyone is shown under the name
+    replaces only their bonus (the latest edit counts; test points stay automatic): they
+    keep their place and nobody else's bonus changes. Only admins (with_email) see that it
+    was set by hand. Banned people are left out and everyone is shown under the name
     on their email."""
     names: dict[str, str] = {}
     best: dict[str, tuple[tuple, WeeklyEntry]] = {}
@@ -115,11 +115,7 @@ def standings(w: WeeklyProblem, q: Question, entries: list[WeeklyEntry], people:
         key = (e.tests_passed or 0, m is not None, tuple(-x for x in m) if m else (), -e.id)
         if e.email not in best or key > best[e.email][0]:
             best[e.email] = (key, e)
-    measures = {
-        email: _measure_of(q, e, w.opens_at)
-        for email, (_, e) in best.items()
-        if email not in manual and e.tests_passed == e.tests_total
-    }
+    measures = {email: _measure_of(q, e, w.opens_at) for email, (_, e) in best.items() if e.tests_passed == e.tests_total}
     bonus = weekly_bonus(bonus_of(w), measures, tie_share(q))
     places = tie_groups(measures, tie_share(q))
     rows = []
@@ -833,8 +829,8 @@ class BonusIn(BaseModel):
 @router.put("/weekly-admin/entries/{entry_id}/bonus")
 async def admin_set_bonus(entry_id: int, body: BonusIn, t: Teacher = Depends(current_teacher), s: AsyncSession = Depends(get_session)):
     """Set someone's bonus for the week by hand, on one of their submissions (their test points
-    stay automatic). The latest edit of theirs counts, they're left out of the automatic bonus
-    places, and it looks automatic to everyone but admins. bonus=None clears it."""
+    stay automatic). The latest edit of theirs counts, nobody else's bonus changes, and it
+    looks automatic to everyone but admins. bonus=None clears it."""
     e = await s.get(WeeklyEntry, entry_id)
     w = await s.get(WeeklyProblem, e.weekly_id) if e else None
     if not e or not w or w.owner_id != t.id:

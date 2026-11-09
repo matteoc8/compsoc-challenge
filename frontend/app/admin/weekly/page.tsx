@@ -418,8 +418,8 @@ export default function AdminWeeklyPage() {
           </div>
           <p className="text-xs text-ink-400">
             {fmtPoints(view.test_points)} for passing every hidden test, bonus {view.bonus_points.map((b) => fmtPoints(b)).join(" / ") || "none"}. Click someone&apos;s
-            bonus to set it by hand: test points stay automatic, the automatic bonus places go to the next people, and the public page
-            shows it like any other bonus.
+            bonus to set it by hand: test points stay automatic, nobody else&apos;s bonus changes, and the public page shows it like any
+            other bonus.
           </p>
           <table className="w-full text-sm">
             <thead className="text-left text-xs text-ink-400">
